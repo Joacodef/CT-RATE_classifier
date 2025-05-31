@@ -19,3 +19,5 @@ seaborn==0.13.2
 pytest==8.3.5
 pytest-mock==3.14.1
 python_dotenv==1.0.1
+
+wandb==0.19.11
