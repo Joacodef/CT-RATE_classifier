@@ -7,7 +7,7 @@ nibabel==5.3.2
 
 # Computer Vision / Medical Imaging
 torchvision==0.17.1
-torchaudio==2.2.1 # Añadido para compatibilidad
+torchaudio==2.2.1
 monai==1.4.0
 
 # Evaluation and Plotting
