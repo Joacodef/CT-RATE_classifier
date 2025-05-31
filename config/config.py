@@ -1,11 +1,13 @@
 from pathlib import Path
 import numpy as np
+from dotenv import load_dotenv
 
 class Config:
+    load_dotenv( Path(__file__).parent/".env" )  # Load environment variables from .env file
     # Data paths
-    TRAIN_IMG_DIR = Path(r"E:\CT-RATE_data_volumes\dataset\train_fixed")
-    VALID_IMG_DIR = Path(r"E:\CT-RATE_data_volumes\dataset\valid_fixed")
-    BASE_PROJECT_DIR = Path(r"E:\ProyectoRN")
+    TRAIN_IMG_DIR = Path(os.getenv("CT_FULL_TRAIN_DIR"))
+    VALID_IMG_DIR = Path(os.getenv("CT_FULL_VALID_DIR"))
+    BASE_PROJECT_DIR = Path(os.getenv("BASE_PROJECT_DIR"))
     SELECTED_TRAIN_VOLUMES_CSV = BASE_PROJECT_DIR / "generated_subsets" / "selected_train_volumes.csv"
     SELECTED_VALID_VOLUMES_CSV = BASE_PROJECT_DIR / "generated_subsets" / "selected_valid_volumes.csv"
     TRAIN_LABELS_CSV = BASE_PROJECT_DIR / "dataset" / "multi_abnormality_labels" / "train_predicted_labels.csv"
@@ -37,7 +39,7 @@ class Config:
     
     # Cache configuration
     USE_CACHE = True
-    CACHE_DIR = Path("D:/preprocessed_cache_3d")
+    CACHE_DIR = Path(os.getenv("CACHE_DIR"))
     
     # Pathology labels
     PATHOLOGY_COLUMNS = [
