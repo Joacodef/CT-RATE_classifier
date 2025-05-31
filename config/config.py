@@ -1,3 +1,5 @@
+# config/config.py
+
 from pathlib import Path
 import numpy as np
 from dotenv import load_dotenv
@@ -13,10 +15,15 @@ class Config:
     SELECTED_VALID_VOLUMES_CSV = BASE_PROJECT_DIR / "generated_subsets" / "selected_valid_volumes.csv"
     TRAIN_LABELS_CSV = BASE_PROJECT_DIR / "dataset" / "multi_abnormality_labels" / "train_predicted_labels.csv"
     VALID_LABELS_CSV = BASE_PROJECT_DIR / "dataset" / "multi_abnormality_labels" / "valid_predicted_labels.csv"
-    
+
     # Model configuration
     MODEL_TYPE = "resnet3d"  # Options: "resnet3d", "densenet3d", "custom3d"
-    
+
+    # Loss Function Configuration
+    LOSS_FUNCTION = "FocalLoss"  # Options: "BCEWithLogitsLoss", "FocalLoss"
+    FOCAL_LOSS_ALPHA = 1.0 # Alpha parameter for FocalLoss
+    FOCAL_LOSS_GAMMA = 2.0 # Gamma parameter for FocalLoss
+
     # Training parameters
     NUM_EPOCHS = 30
     BATCH_SIZE = 2
@@ -25,23 +32,23 @@ class Config:
     WEIGHT_DECAY = 0.01
     NUM_WORKERS = 0
     PIN_MEMORY = True
-    
+
     # Image processing
     TARGET_SPACING = np.array([1.0, 1.0, 1.0])  # mm
     TARGET_SHAPE_DHW = (96, 224, 224)  # Reduced depth for memory efficiency
     CLIP_HU_MIN = -1000
     CLIP_HU_MAX = 1000
-    
+
     # Training optimization
     GRADIENT_CHECKPOINTING = True
     MIXED_PRECISION = True
     USE_BF16 = True
     EARLY_STOPPING_PATIENCE = 5
-    
+
     # Cache configuration
     USE_CACHE = True
     CACHE_DIR = Path(os.getenv("CACHE_DIR"))
-    
+
     # Pathology labels
     PATHOLOGY_COLUMNS = [
         "Medical material", "Arterial wall calcification", "Cardiomegaly",
