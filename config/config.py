@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 from dotenv import load_dotenv
+import os
 
 class Config:
     load_dotenv( Path(__file__).parent/".env" )  # Load environment variables from .env file
