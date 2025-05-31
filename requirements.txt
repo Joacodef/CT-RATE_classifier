@@ -17,3 +17,5 @@ seaborn==0.13.2
 
 # Testing
 pytest==8.3.5
+
+dotenv==1.0.1
