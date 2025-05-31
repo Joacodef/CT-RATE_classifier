@@ -18,7 +18,7 @@ from unittest.mock import Mock, patch
 
 # Add project root to path for imports
 import sys
-sys.path.append(str(Path(__file__).parent.parent.parent.parent)+"/data")
+sys.path.append(str(Path(__file__).parent.parent.parent.parent) + "/data")
 
 from preprocessing import preprocess_ct_volume, resize_volume
 

@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import Dataset
-from .preprocessing import preprocess_ct_volume # Assumes preprocess_ct_volume is in a local 'preprocessing.py' file
-from .utils import get_dynamic_image_path # Assumes get_dynamic_image_path is in a local 'utils.py' file
+from .preprocessing import preprocess_ct_volume
+from .utils import get_dynamic_image_path
 import pandas as pd
 import numpy as np
 from pathlib import Path
