@@ -51,30 +51,73 @@ logger = logging.getLogger(__name__)
 
 
 def create_model(config: Config) -> nn.Module:
-    """Create and return the 3D model based on the provided configuration.
-
-    Args:
-        config: Configuration object specifying model type and parameters.
-
-    Returns:
-        A PyTorch nn.Module representing the instantiated 3D model.
-
-    Raises:
-        ValueError: If the specified model_type in config is unknown.
-    """
-    if config.MODEL_TYPE == "resnet3d":
-        model = resnet18_3d(
+    """Create and return the 3D model based on the provided configuration."""
+    
+    model_type = config.MODEL_TYPE.lower()
+    model_variant = getattr(config, 'MODEL_VARIANT', 'default').lower()
+    
+    if model_type == "resnet3d":
+        if model_variant == "34":
+            model = resnet34_3d(
+                num_classes=config.NUM_PATHOLOGIES,
+                use_checkpointing=config.GRADIENT_CHECKPOINTING
+            )
+            logger.info(f"Created ResNet3D-34 model")
+        else:  # Default to ResNet-18
+            model = resnet18_3d(
+                num_classes=config.NUM_PATHOLOGIES,
+                use_checkpointing=config.GRADIENT_CHECKPOINTING
+            )
+            logger.info(f"Created ResNet3D-18 model")
+    
+    elif model_type == "densenet3d":
+        densenet_models = {
+            "121": densenet121_3d,
+            "169": densenet169_3d,
+            "201": densenet201_3d,
+            "161": densenet161_3d,
+            "small": densenet_small_3d,
+            "tiny": densenet_tiny_3d
+        }
+        
+        model_fn = densenet_models.get(model_variant, densenet121_3d)
+        model = model_fn(
             num_classes=config.NUM_PATHOLOGIES,
             use_checkpointing=config.GRADIENT_CHECKPOINTING
         )
-        # Log model creation details.
-        logger.info("Created ResNet3D-18 model with gradient checkpointing"
-                   if config.GRADIENT_CHECKPOINTING else "Created ResNet3D-18 model")
+        logger.info(f"Created DenseNet3D-{model_variant or '121'} model")
+    
+    elif model_type == "vit3d":
+        vit_models = {
+            "tiny": vit_tiny_3d,
+            "small": vit_small_3d,
+            "base": vit_base_3d,
+            "large": vit_large_3d
+        }
+        
+        model_fn = vit_models.get(model_variant, vit_small_3d)
+        
+        # Get ViT-specific config options
+        patch_size = getattr(config, 'VIT_PATCH_SIZE', (16, 16, 16))
+        
+        model = model_fn(
+            num_classes=config.NUM_PATHOLOGIES,
+            use_checkpointing=config.GRADIENT_CHECKPOINTING,
+            volume_size=config.TARGET_SHAPE_DHW,
+            patch_size=patch_size
+        )
+        logger.info(f"Created ViT3D-{model_variant or 'small'} model with patch_size={patch_size}")
+    
     else:
-        # Raise error for unsupported model types.
         raise ValueError(f"Unknown model type: {config.MODEL_TYPE}")
+    
+    # Log model parameters count
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
+    
     return model
-
+    
 
 def load_and_prepare_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load and prepare training and validation dataframes.

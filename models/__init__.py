@@ -18,11 +18,20 @@ from .densenet3d import (
     densenet_small_3d,
     densenet_tiny_3d
 )
+from .vit3d import (
+    VisionTransformer3D,
+    vit_tiny_3d,
+    vit_small_3d,
+    vit_base_3d,
+    vit_large_3d
+)
 from .losses import FocalLoss
 
 __all__ = [
     # ResNet models
     'ResNet3D',
+    'resnet18_3d',
+    'resnet34_3d',
     
     # DenseNet models
     'DenseNet3D',
@@ -32,6 +41,13 @@ __all__ = [
     'densenet161_3d',
     'densenet_small_3d',
     'densenet_tiny_3d',
+    
+    # Vision Transformer models
+    'VisionTransformer3D',
+    'vit_tiny_3d',
+    'vit_small_3d',
+    'vit_base_3d',
+    'vit_large_3d',
     
     # Loss functions
     'FocalLoss'

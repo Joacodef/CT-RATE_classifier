@@ -17,7 +17,17 @@ class Config:
     VALID_LABELS_CSV = BASE_PROJECT_DIR / "dataset" / "multi_abnormality_labels" / "valid_predicted_labels.csv"
 
     # Model configuration
-    MODEL_TYPE = "resnet3d"  # Options: "resnet3d", "densenet3d", "custom3d"
+    MODEL_TYPE = "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d"
+    MODEL_VARIANT = "tiny"      # Options depend on MODEL_TYPE:
+                                # - resnet3d: "18", "34"
+                                # - densenet3d: "121", "169", "201", "161", "small", "tiny"
+                                # - vit3d: "tiny", "small", "base", "large"
+
+    # Vision Transformer specific settings (only used if MODEL_TYPE == "vit3d")
+    VIT_PATCH_SIZE = (16, 16, 16)  # Patch size for ViT models
+    VIT_EMBED_DIM = 384  # Embedding dimension (overrides default for variant)
+    VIT_DEPTH = 12  # Number of transformer blocks
+    VIT_NUM_HEADS = 6  # Number of attention heads
 
     # Loss Function Configuration
     LOSS_FUNCTION = "FocalLoss"  # Options: "BCEWithLogitsLoss", "FocalLoss"
