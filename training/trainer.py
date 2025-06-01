@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Tuple, Dict, Any 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning)
+# Standard library imports
+import time
+import json
+import logging
+from pathlib import Path
+from typing import Tuple, Dict, Any 
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning)
 
 # Third-party imports
 import torch
@@ -25,11 +33,12 @@ from config.config import Config
 
 # Internal imports - models
 from models.resnet3d import resnet18_3d, resnet34_3d
-from models.densenet3d import densenet121_3d, densenet169_3d
+from models.densenet3d import densenet121_3d, densenet169_3d, densenet201_3d, densenet161_3d, densenet_small_3d, densenet_tiny_3d
+from models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d  # ADD THIS LINE
 from models.losses import FocalLoss 
 
 # Internal imports - data
-from data.dataset import CTDataset3D # CTDataset3D is imported here
+from data.dataset import CTDataset3D
 
 # Internal imports - training utilities
 from .metrics import compute_metrics
@@ -48,7 +57,6 @@ from utils.torch_utils import setup_torch_optimizations
 
 # Get logger
 logger = logging.getLogger(__name__)
-
 
 def create_model(config: Config) -> nn.Module:
     """Create and return the 3D model based on the provided configuration."""
