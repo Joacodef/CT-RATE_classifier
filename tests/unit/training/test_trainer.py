@@ -5,7 +5,7 @@ Unit tests for training/trainer.py
 
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock, call 
+from unittest.mock import patch, MagicMock, call, ANY
 import pandas as pd 
 import numpy as np 
 
@@ -33,7 +33,7 @@ import pytest
 import torch
 import torch.nn as nn
 # Import validate_epoch from the trainer module
-from training.trainer import create_model, load_and_prepare_data, train_epoch, validate_epoch
+from training.trainer import create_model, load_and_prepare_data, train_epoch, validate_epoch, train_model
 from config.config import Config
 from models.resnet3d import ResNet3D
 
@@ -456,6 +456,206 @@ class TestValidateEpoch:
         deps.model.assert_not_called() # Checks if model(...) was called
         deps.criterion.assert_not_called()
         
+class TestTrainModel:
+    @pytest.fixture
+    def actual_mock_config(self, tmp_path: Path): # Renamed fixture
+        """Creates a Config instance for testing train_model, using tmp_path."""
+        config = Config() # Assuming Config() sets up most defaults
+
+        # Override for test speed and isolation
+        config.NUM_EPOCHS = 1 # Minimal epochs for testing structure
+        config.OUTPUT_DIR = tmp_path / "test_output_dir"
+        config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        config.PATHOLOGY_COLUMNS = ["PathologyA", "PathologyB"] # Simplified
+        config.NUM_PATHOLOGIES = len(config.PATHOLOGY_COLUMNS)
+        config.ORIENTATION_AXCODES = "LPS_Test" # Use a distinct value for testing
+
+        # Critical: Ensure RESUME_FROM_CHECKPOINT is None by default for other tests,
+        # but will be set in the specific test_train_model_resumes_from_checkpoint.
+        config.RESUME_FROM_CHECKPOINT = None
+
+        # Provide paths for CSV files within tmp_path
+        # Create minimal dummy files so that pandas.read_csv (if not fully mocked) doesn't fail
+        dummy_volume_data = {'VolumeName': ['vol_train_1', 'vol_train_2']}
+        dummy_label_data_train = {'VolumeName': ['vol_train_1', 'vol_train_2'], 'PathologyA': [1,0], 'PathologyB': [0,1]}
+        
+        config.SELECTED_TRAIN_VOLUMES_CSV = tmp_path / "selected_train_volumes.csv"
+        pd.DataFrame(dummy_volume_data).to_csv(config.SELECTED_TRAIN_VOLUMES_CSV, index=False)
+        
+        config.TRAIN_LABELS_CSV = tmp_path / "train_predicted_labels.csv"
+        pd.DataFrame(dummy_label_data_train).to_csv(config.TRAIN_LABELS_CSV, index=False)
+
+        dummy_volume_data_valid = {'VolumeName': ['vol_valid_1']}
+        dummy_label_data_valid = {'VolumeName': ['vol_valid_1'], 'PathologyA': [1], 'PathologyB': [1]}
+        config.SELECTED_VALID_VOLUMES_CSV = tmp_path / "selected_valid_volumes.csv"
+        pd.DataFrame(dummy_volume_data_valid).to_csv(config.SELECTED_VALID_VOLUMES_CSV, index=False)
+
+        config.VALID_LABELS_CSV = tmp_path / "valid_predicted_labels.csv"
+        pd.DataFrame(dummy_label_data_valid).to_csv(config.VALID_LABELS_CSV, index=False)
+        
+        config.TRAIN_IMG_DIR = tmp_path / "dummy_train_img_dir"
+        config.VALID_IMG_DIR = tmp_path / "dummy_valid_img_dir"
+        config.CACHE_DIR = tmp_path / "dummy_cache_dir"
+        config.TRAIN_IMG_DIR.mkdir(exist_ok=True)
+        config.VALID_IMG_DIR.mkdir(exist_ok=True)
+        config.CACHE_DIR.mkdir(exist_ok=True)
+
+        config.LOSS_FUNCTION = "FocalLoss" # Default to avoid BCE specific logic for this test
+        config.MIXED_PRECISION = True # To ensure scaler is created for the test case
+        
+        return config
+
+
+    # Decorators are applied from bottom-up. Innermost is the first mock arg after self.
+    # The order of arguments in def test_... MUST match this order.
+    @patch('json.load')                             # mock_json_load (19th)
+    @patch('builtins.open')                         # mock_builtin_open (18th)
+    @patch('training.trainer.generate_final_report')# mock_generate_report (17th)
+    @patch('training.trainer.wandb.watch')          # mock_wandb_watch (16th)
+    @patch('training.trainer.wandb.init')           # mock_wandb_init (15th)
+    @patch('training.trainer.load_checkpoint')      # mock_load_checkpoint_func (14th)
+    @patch('training.trainer.Path')                 # mock_path_class (13th)
+    @patch('training.trainer.save_checkpoint')      # mock_save_checkpoint (12th)
+    @patch('training.trainer.compute_metrics', return_value={'roc_auc_macro': 0.95, 'f1_macro': 0.9}) # mock_compute_metrics (11th)
+    @patch('training.trainer.validate_epoch', return_value=(0.4, np.array([[0.1,0.8]]), np.array([[0,1]]))) # mock_validate_epoch (10th)
+    @patch('training.trainer.train_epoch', return_value=0.5) # mock_train_epoch (9th)
+    @patch('torch.optim.lr_scheduler.CosineAnnealingLR') # mock_scheduler_class (8th)
+    @patch('torch.optim.AdamW')                     # mock_optimizer_class (7th)
+    @patch('training.trainer.nn.BCEWithLogitsLoss') # mock_bce_loss_fn (6th)
+    @patch('training.trainer.FocalLoss')            # mock_focal_loss_fn (5th)
+    @patch('training.trainer.create_model')         # mock_create_model (4th)
+    @patch('training.trainer.DataLoader')           # mock_dataloader (3rd)
+    @patch('training.trainer.CTDataset3D')          # mock_ctdataset3d (2nd)
+    @patch('training.trainer.load_and_prepare_data')# mock_load_and_prepare_data_func (1st)
+    def test_train_model_resumes_from_checkpoint(
+        self, 
+        # Arguments must be in order of patches from innermost to outermost
+        mock_load_and_prepare_data_func, 
+        mock_ctdataset3d,
+        mock_dataloader,
+        mock_create_model,
+        mock_focal_loss_fn,
+        mock_bce_loss_fn,
+        mock_optimizer_class,
+        mock_scheduler_class,
+        mock_train_epoch,
+        mock_validate_epoch,
+        mock_compute_metrics,
+        mock_save_checkpoint,
+        mock_path_class,
+        mock_load_checkpoint_func,
+        mock_wandb_init,
+        mock_wandb_watch,
+        mock_generate_report,
+        mock_builtin_open, 
+        mock_json_load,    
+        actual_mock_config # This is the pytest fixture, correctly named and positioned
+    ):
+        # --- Setup for resuming ---
+        checkpoint_path_str = "dummy_checkpoint.pth" # Relative path string
+        actual_mock_config.RESUME_FROM_CHECKPOINT = checkpoint_path_str
+        
+        # Configure the mock Path object factory (mock_path_class)
+        mock_checkpoint_path_obj = MagicMock(spec=Path)
+        mock_checkpoint_path_obj.exists.return_value = True # Checkpoint file "exists"
+        
+        mock_history_path_obj = MagicMock(spec=Path)
+        mock_history_path_obj.exists.return_value = False # History file "does not exist" for this test
+
+        def path_side_effect(path_arg):
+            # Convert path_arg to string for comparison, as it could be Path object or string
+            path_arg_str = str(path_arg)
+            if path_arg_str == checkpoint_path_str:
+                return mock_checkpoint_path_obj
+            elif path_arg_str == str(actual_mock_config.OUTPUT_DIR / 'training_history.json'):
+                return mock_history_path_obj
+            # If Path() is called with the OUTPUT_DIR itself (which is already a Path object from tmp_path)
+            elif path_arg is actual_mock_config.OUTPUT_DIR:
+                 return actual_mock_config.OUTPUT_DIR # Return the real tmp_path Path object
+            
+            # Default behavior for other Path() instantiations: return a new MagicMock for Path
+            # This allows calls like `Path(...).mkdir()` without pre-configuring every possible path.
+            new_mock_path = MagicMock(spec=Path)
+            new_mock_path.__str__ = MagicMock(return_value=path_arg_str) # So str(Path(...)) works
+            new_mock_path.name = Path(path_arg_str).name
+            new_mock_path.stem = Path(path_arg_str).stem
+            new_mock_path.parent = MagicMock(spec=Path) # Mock parent to allow parent.mkdir
+            new_mock_path.parent.mkdir.return_value = None
+            new_mock_path.__truediv__.side_effect = lambda other: Path(path_arg_str) / other # Support / operator
+            new_mock_path.exists.return_value = False # Default for other paths
+            return new_mock_path
+
+        mock_path_class.side_effect = path_side_effect
+        
+        # Configure return values for mocked functions
+        resumed_epoch = 5
+        resumed_metrics = {'roc_auc_macro': 0.88} 
+        mock_load_checkpoint_func.return_value = (resumed_epoch, resumed_metrics)
+
+        mock_scheduler_instance = MagicMock()
+        mock_scheduler_class.return_value = mock_scheduler_instance
+        
+        mock_load_and_prepare_data_func.return_value = (
+            pd.DataFrame({'VolumeName': ['vol1'], actual_mock_config.PATHOLOGY_COLUMNS[0]: [1], actual_mock_config.PATHOLOGY_COLUMNS[1]: [0]}),
+            pd.DataFrame({'VolumeName': ['vol2'], actual_mock_config.PATHOLOGY_COLUMNS[0]: [0], actual_mock_config.PATHOLOGY_COLUMNS[1]: [1]})
+        )
+        
+        # --- Mocking model and its .to() call ---
+        mock_model_instance_original = MagicMock(spec=torch.nn.Module, name="model_original")
+        mock_model_instance_original.parameters.return_value = [torch.nn.Parameter(torch.randn(1))]
+        
+        mock_model_after_to = MagicMock(spec=torch.nn.Module, name="model_after_to_device")
+        # Ensure the .to() mock also supports load_state_dict if it's called on the .to() result by load_checkpoint
+        # This is important if load_checkpoint itself tries to call model.load_state_dict
+        mock_model_after_to.load_state_dict = MagicMock()
+
+
+        mock_create_model.return_value = mock_model_instance_original
+        mock_model_instance_original.to.return_value = mock_model_after_to
+        
+        actual_mock_config.NUM_EPOCHS = resumed_epoch + 2 # e.g., train for 2 more epochs
+
+        # Mock wandb.init to return a mock run object
+        mock_wandb_run = MagicMock()
+        mock_wandb_init.return_value = mock_wandb_run
+        
+        # --- Call train_model ---
+        train_model(actual_mock_config)
+
+        # --- Assertions for resuming ---
+        # Assert load_checkpoint was called correctly
+        # The scaler is created if actual_mock_config.MIXED_PRECISION is True
+        # If it is, a GradScaler instance will be passed. ANY handles this.
+        mock_load_checkpoint_func.assert_called_once_with(
+            # Path(checkpoint_path_str) would be called inside train_model,
+            # which our mock_path_class.side_effect handles and returns mock_checkpoint_path_obj.
+            # However, train_model receives the string from config.
+            # The actual argument passed to load_checkpoint is this string.
+            checkpoint_path_str, # Check if it's the string or Path object
+            mock_model_after_to, 
+            mock_optimizer_class.return_value, 
+            ANY # For the scaler (can be None or GradScaler instance)
+        )
+        
+        # Assert scheduler was advanced correctly
+        # In train_model: for _ in range(start_epoch): scheduler.step()
+        # start_epoch = checkpoint_epoch + 1 = resumed_epoch + 1
+        expected_initial_scheduler_steps = resumed_epoch + 1
+        
+        # The training loop runs for (actual_mock_config.NUM_EPOCHS - start_epoch) times
+        # Each loop iteration also calls scheduler.step()
+        expected_loop_iterations = actual_mock_config.NUM_EPOCHS - (resumed_epoch + 1)
+        
+        total_expected_scheduler_steps = expected_initial_scheduler_steps + expected_loop_iterations
+        assert mock_scheduler_instance.step.call_count == total_expected_scheduler_steps
+
+        # Assert train_epoch call count
+        assert mock_train_epoch.call_count == expected_loop_iterations
+
+        # Assert wandb.watch was called with the model after .to(device)
+        mock_wandb_watch.assert_called_with(mock_model_after_to, log="gradients", log_freq=100)
+
 
 # --- Cleanup ---
 def teardown_module(module):

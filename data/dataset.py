@@ -1,19 +1,21 @@
+# data/dataset.py
 import torch
 from torch.utils.data import Dataset
-from .preprocessing import preprocess_ct_volume
+# Updated import: using MONAI-based preprocessing
+from .preprocessing import create_monai_preprocessing_pipeline, preprocess_ct_volume_monai
 from .utils import get_dynamic_image_path
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 
-import logging
-logger = logging.getLogger(__name__)
+import logging # Standard library logging
+logger = logging.getLogger(__name__) # Standard library logger
 
 class CTDataset3D(Dataset):
     """
     Represents a 3D CT scan dataset for pathology classification.
-    This class handles loading, preprocessing, caching, and augmenting CT scan volumes.
+    This class handles loading, preprocessing (using MONAI), caching, and augmenting CT scan volumes.
     It is designed to work with PyTorch's DataLoader for efficient batch processing.
     """
 
@@ -21,7 +23,7 @@ class CTDataset3D(Dataset):
                  pathology_columns: List[str], target_spacing_xyz: np.ndarray,
                  target_shape_dhw: Tuple[int, int, int], clip_hu_min: float, clip_hu_max: float,
                  use_cache: bool = True, cache_dir: Optional[Path] = None,
-                 augment: bool = False):
+                 augment: bool = False, orientation_axcodes: str = "LPS"):
         """
         Initializes the CTDataset3D instance.
 
@@ -42,15 +44,20 @@ class CTDataset3D(Dataset):
                        Required if use_cache is True. Defaults to None.
             augment: Boolean indicating whether to apply data augmentation.
                      Defaults to False.
+            orientation_axcodes: Target orientation for MONAI's Orientationd transform (e.g., "LPS", "RAS").
+                                 Defaults to "LPS".
         """
 
         self.dataframe = dataframe.reset_index(drop=True)
         self.img_dir = Path(img_dir) # Ensures img_dir is a Path object
         self.pathology_columns = pathology_columns
-        self.target_spacing_xyz = np.asarray(target_spacing_xyz) # Ensures it's a numpy array
-        self.target_shape_dhw = tuple(target_shape_dhw) # Ensures it's a tuple
+        # Parameters for MONAI pipeline are stored directly
+        self.target_spacing_xyz = np.asarray(target_spacing_xyz)
+        self.target_shape_dhw = tuple(target_shape_dhw)
         self.clip_hu_min = float(clip_hu_min)
         self.clip_hu_max = float(clip_hu_max)
+        self.orientation_axcodes = orientation_axcodes
+
         self.use_cache = use_cache
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.augment = augment
@@ -63,37 +70,30 @@ class CTDataset3D(Dataset):
             # Creates the cache directory if it does not already exist.
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Dataset initialized with {len(self.dataframe)} samples. Caching: {self.use_cache}, Augmentation: {self.augment}")
+        # Initialize the MONAI preprocessing pipeline
+        # This pipeline is created once and reused for all samples.
+        self.monai_preprocessing_pipeline = create_monai_preprocessing_pipeline(
+            target_spacing_xyz=self.target_spacing_xyz,
+            target_shape_dhw=self.target_shape_dhw,
+            clip_hu_min=self.clip_hu_min,
+            clip_hu_max=self.clip_hu_max,
+            orientation_axcodes=self.orientation_axcodes
+        )
+
+        logger.info(f"Dataset initialized with {len(self.dataframe)} samples. Caching: {self.use_cache}, Augmentation: {self.augment}. MONAI pipeline created.")
 
     def _get_cache_path(self, idx: int) -> Path:
         """
         Generates the file path for a cached sample.
-
-        The cache path is constructed using the volume name and index to ensure uniqueness.
-        It replaces '.nii.gz' to create a cleaner filename for the PyTorch tensor file.
-
-        Args:
-            idx: The index of the sample in the dataset.
-
-        Returns:
-            Path object representing the full path to the cached file.
         """
-        # Retrieves the volume name from the dataframe for the given index.
         volume_name = self.dataframe.iloc[idx]['VolumeName']
-        # Cleans the volume name by removing common NIfTI file extensions.
         cleaned_name = volume_name.replace(".nii.gz", "").replace(".nii", "")
-        return self.cache_dir / f"sample_{cleaned_name}_{idx:06d}.pt"
+        return self.cache_dir / f"sample_monai_{cleaned_name}_{idx:06d}.pt"
 
     def _load_from_cache(self, idx: int) -> Optional[Dict[str, any]]:
         """
         Attempts to load a preprocessed sample from the cache.
-
-        Args:
-            idx: The index of the sample in the dataset.
-
-        Returns:
-            A dictionary containing the cached sample if found and valid, otherwise None.
-            Handles potential errors during cache loading, such as corrupted files.
+        If loading fails (e.g., corrupted file), it attempts to delete the corrupted cache file.
         """
         if not self.use_cache or not self.cache_dir:
             return None
@@ -101,123 +101,85 @@ class CTDataset3D(Dataset):
         cache_path = self._get_cache_path(idx)
         if cache_path.exists():
             try:
-                # Loads the sample from the .pt file. map_location='cpu' ensures
-                # the tensor is loaded to CPU memory, which is generally safer
-                # before moving to a specific device later if needed.
                 logger.debug(f"Loading sample {idx} from cache: {cache_path}")
                 return torch.load(cache_path, map_location='cpu')
             except Exception as e:
-                # Logs a warning and removes the corrupted cache file to prevent future errors.
-                logger.warning(f"Error loading sample {idx} from cache {cache_path}: {e}. Removing corrupted file.")
-                cache_path.unlink(missing_ok=True) # missing_ok=True prevents error if file was already deleted
+                logger.warning(f"CACHE_LOAD_ERROR: Error loading sample {idx} from cache {cache_path}: {type(e).__name__} - {e}. Attempting to remove corrupted file.") 
+                # More explicit attempt to remove the corrupted cache file
+                if cache_path.exists(): # Re-check existence before unlinking
+                    logger.info(f"CACHE_DELETE_ATTEMPT: Corrupted file {cache_path} exists. Attempting unlink.") # ADDED
+                    try:
+                        cache_path.unlink() # Attempt to delete the file
+                        # After attempting unlink, immediately check existence again
+                        if not cache_path.exists(): # ADDED
+                            logger.info(f"CACHE_DELETE_SUCCESS: Successfully removed corrupted cache file: {cache_path}") # ADDED
+                        else:
+                            logger.error(f"CACHE_DELETE_FAILURE_POST_UNLINK: File {cache_path} still exists immediately after unlink attempt.") # ADDED
+                    except OSError as unlink_e:
+                        logger.error(f"CACHE_DELETE_OSERROR: Failed to remove corrupted cache file {cache_path} due to OSError: {type(unlink_e).__name__} - {unlink_e}") # ADDED
+                        if hasattr(unlink_e, 'winerror'): # ADDED
+                            logger.error(f"CACHE_DELETE_OSERROR_WINCODE: Windows error code: {unlink_e.winerror}") # ADDED
+                else:
+                    logger.info(f"CACHE_DELETE_SKIP: Corrupted cache file {cache_path} was already removed or did not exist before unlink attempt in except block.") # ADDED
         return None
 
     def _save_to_cache(self, idx: int, sample: Dict[str, any]):
         """
         Saves a preprocessed sample to the cache.
-
-        The sample is saved as a PyTorch tensor file (.pt).
-
-        Args:
-            idx: The index of the sample in the dataset.
-            sample: The preprocessed sample dictionary to be cached.
         """
         if not self.use_cache or not self.cache_dir:
             return
 
         cache_path = self._get_cache_path(idx)
         try:
-            # Ensures the parent directory exists before attempting to save.
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(sample, cache_path)
             logger.debug(f"Saved sample {idx} to cache: {cache_path}")
         except Exception as e:
-            # Logs a warning if saving to cache fails, but does not interrupt the process.
-            # This could be due to disk space issues or permissions.
             logger.warning(f"Error saving sample {idx} to cache {cache_path}: {e}")
 
     def __len__(self) -> int:
         """
         Returns the total number of samples in the dataset.
-
-        This is a required method for PyTorch Datasets.
         """
         return len(self.dataframe)
 
     def __getitem__(self, idx: int) -> Dict[str, any]:
         """
         Retrieves a sample from the dataset by index.
-
-        This method first attempts to load the sample from cache. If not found or
-        caching is disabled, it loads and preprocesses the CT scan volume.
-        Augmentation is applied if enabled, after potential caching of the
-        original preprocessed sample.
-
-        Args:
-            idx: The index of the sample to retrieve.
-
-        Returns:
-            A dictionary containing the processed 'pixel_values' (the 3D image tensor),
-            'labels' (the pathology labels tensor), and 'volume_name' (string).
         """
-        # Attempts to load the sample from cache.
         cached_sample = self._load_from_cache(idx)
         if cached_sample is not None:
-            # If augmentation is enabled and the sample is from cache,
-            # applies augmentation to the cached pixel values.
-            # This ensures that augmentations are applied on-the-fly even for cached items.
             if self.augment and 'pixel_values' in cached_sample:
-                # Clones the tensor before augmentation if it might be used elsewhere,
-                # or if augmentation is in-place. Here, _apply_augmentation returns a new tensor.
                 cached_sample['pixel_values'] = self._apply_augmentation(cached_sample['pixel_values'].clone())
             return cached_sample
 
-        # If not in cache or caching is disabled, proceeds to load and process the sample.
         row = self.dataframe.iloc[idx]
         volume_name = row['VolumeName']
-
-        # Extracts pathology labels from the dataframe row and converts them to a float tensor.
         labels_data = row[self.pathology_columns].values.astype(np.float32)
         labels = torch.tensor(labels_data, dtype=torch.float32)
-
-        # Constructs the full path to the image file.
-        # get_dynamic_image_path might handle cases where images are in subdirectories or have varying names.
         img_path = get_dynamic_image_path(self.img_dir, volume_name)
 
-        pixel_values: torch.Tensor # Type hint for clarity
-        if not img_path or not img_path.exists(): # Added check for None from get_dynamic_image_path
-            # Logs an error and returns a zero tensor if the image file is not found.
-            # This prevents crashes and allows the training to continue, though it might affect model performance.
+        pixel_values: torch.Tensor
+        if not img_path or not img_path.exists():
             logger.error(f"Volume not found: {img_path} for index {idx}. Returning zero tensor.")
-            # Creates a tensor of zeros with the expected shape (channels, depth, height, width).
-            # Assuming single channel for CT scans.
             pixel_values = torch.zeros((1, *self.target_shape_dhw), dtype=torch.float32)
         else:
-            # Preprocesses the CT volume using the specified parameters.
-            # This typically involves loading, resampling, windowing, normalizing, and converting to a tensor.
-            pixel_values = preprocess_ct_volume(
-                img_path,
-                self.target_spacing_xyz,
-                self.target_shape_dhw,
-                self.clip_hu_min,
-                self.clip_hu_max
+            pixel_values = preprocess_ct_volume_monai(
+                nii_path=img_path,
+                preprocessing_pipeline=self.monai_preprocessing_pipeline,
+                target_shape_dhw=self.target_shape_dhw
             )
 
         sample = {
             "pixel_values": pixel_values,
             "labels": labels,
-            "volume_name": str(volume_name) # Ensures volume_name is a string
+            "volume_name": str(volume_name)
         }
 
-        # Saves the non-augmented version of the sample to cache if caching is enabled.
-        # This allows faster retrieval later and separates caching from augmentation.
         self._save_to_cache(idx, sample)
 
-        # Applies augmentation if enabled.
-        # Augmentation is applied after caching the original preprocessed sample.
         if self.augment:
-            # Clones the tensor before augmentation to avoid modifying the cached version
-            # if _apply_augmentation modifies in-place or if the original tensor is needed.
             sample["pixel_values"] = self._apply_augmentation(sample["pixel_values"].clone())
 
         return sample
@@ -225,49 +187,22 @@ class CTDataset3D(Dataset):
     def _apply_augmentation(self, volume: torch.Tensor) -> torch.Tensor:
         """
         Applies a series of random augmentations to the input volume.
-
-        Augmentations include random flips along depth and width axes,
-        addition of Gaussian noise, and random intensity shifts.
-        These help improve model generalization by exposing it to more varied data.
-
-        Args:
-            volume: A PyTorch tensor representing the 3D CT scan volume,
-                    expected shape (channels, depth, height, width).
-
-        Returns:
-            The augmented volume as a PyTorch tensor.
         """
-        # Ensures volume is a floating point tensor for augmentations.
         volume = volume.float()
-
-        # Randomly flips the volume along the depth axis (dim=1 for C,D,H,W).
         if torch.rand(1).item() > 0.5:
             volume = torch.flip(volume, dims=[1])
             logger.debug("Applied depth flip augmentation.")
-
-        # Randomly flips the volume along the width axis (dim=3 for C,D,H,W).
         if torch.rand(1).item() > 0.5:
             volume = torch.flip(volume, dims=[3])
             logger.debug("Applied width flip augmentation.")
-
-        # Adds a small amount of Gaussian noise to the volume.
-        # This simulates scanner noise and can improve robustness.
-        # Applied with a 30% probability.
-        if torch.rand(1).item() > 0.7: # Original probability was 0.7, meaning 30% chance to add noise
-            noise = torch.randn_like(volume) * 0.01 # Small noise standard deviation
+        if torch.rand(1).item() > 0.7:
+            noise = torch.randn_like(volume) * 0.01
             volume = volume + noise
-            # Clamps the volume to the typical [0, 1] range after adding noise.
             volume = torch.clamp(volume, 0.0, 1.0)
             logger.debug("Applied noise augmentation.")
-
-        # Randomly shifts the intensity of the volume.
-        # This simulates variations in image intensity.
         if torch.rand(1).item() > 0.5:
-            # Generates a random shift factor between -0.05 and +0.05.
-            shift = (torch.rand(1).item() - 0.5) * 0.1 # Shift range +/- 5%
+            shift = (torch.rand(1).item() - 0.5) * 0.1
             volume = volume + shift
-            # Clamps the volume to the [0, 1] range after intensity shift.
             volume = torch.clamp(volume, 0.0, 1.0)
             logger.debug(f"Applied intensity shift: {shift:.4f}")
-
         return volume

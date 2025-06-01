@@ -29,7 +29,7 @@ from models.densenet3d import densenet121_3d, densenet169_3d
 from models.losses import FocalLoss 
 
 # Internal imports - data
-from data.dataset import CTDataset3D
+from data.dataset import CTDataset3D # CTDataset3D is imported here
 
 # Internal imports - training utilities
 from .metrics import compute_metrics
@@ -306,6 +306,7 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
             "target_spacing_xyz": config.TARGET_SPACING.tolist(),
             "clip_hu_min": config.CLIP_HU_MIN,
             "clip_hu_max": config.CLIP_HU_MAX,
+            "orientation_axcodes": config.ORIENTATION_AXCODES, # Added for wandb logging
             "epochs": config.NUM_EPOCHS,
             "batch_size": config.BATCH_SIZE,
             "gradient_accumulation_steps": config.GRADIENT_ACCUMULATION_STEPS,
@@ -340,18 +341,30 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
 
     # Create training and validation datasets.
     train_dataset = CTDataset3D(
-        train_df, config.TRAIN_IMG_DIR, config.PATHOLOGY_COLUMNS,
-        config.TARGET_SPACING, config.TARGET_SHAPE_DHW,
-        config.CLIP_HU_MIN, config.CLIP_HU_MAX,
-        use_cache=config.USE_CACHE, cache_dir=config.CACHE_DIR,
-        augment=True # Enable augmentation for training dataset.
+        dataframe=train_df, 
+        img_dir=config.TRAIN_IMG_DIR, 
+        pathology_columns=config.PATHOLOGY_COLUMNS,
+        target_spacing_xyz=config.TARGET_SPACING, 
+        target_shape_dhw=config.TARGET_SHAPE_DHW,
+        clip_hu_min=config.CLIP_HU_MIN, 
+        clip_hu_max=config.CLIP_HU_MAX,
+        use_cache=config.USE_CACHE, 
+        cache_dir=config.CACHE_DIR,
+        augment=True, # Enable augmentation for training dataset.
+        orientation_axcodes=config.ORIENTATION_AXCODES # Pass orientation config
     )
     valid_dataset = CTDataset3D(
-        valid_df, config.VALID_IMG_DIR, config.PATHOLOGY_COLUMNS,
-        config.TARGET_SPACING, config.TARGET_SHAPE_DHW,
-        config.CLIP_HU_MIN, config.CLIP_HU_MAX,
-        use_cache=config.USE_CACHE, cache_dir=config.CACHE_DIR,
-        augment=False # Disable augmentation for validation dataset.
+        dataframe=valid_df, 
+        img_dir=config.VALID_IMG_DIR, 
+        pathology_columns=config.PATHOLOGY_COLUMNS,
+        target_spacing_xyz=config.TARGET_SPACING, 
+        target_shape_dhw=config.TARGET_SHAPE_DHW,
+        clip_hu_min=config.CLIP_HU_MIN, 
+        clip_hu_max=config.CLIP_HU_MAX,
+        use_cache=config.USE_CACHE, 
+        cache_dir=config.CACHE_DIR,
+        augment=False, # Disable augmentation for validation dataset.
+        orientation_axcodes=config.ORIENTATION_AXCODES # Pass orientation config
     )
     # Create DataLoaders.
     train_loader = DataLoader(

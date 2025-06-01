@@ -34,7 +34,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from config.config import Config
 from models.resnet3d import resnet18_3d, resnet34_3d
-from data.dataset import CTDataset3D
+from data.dataset import CTDataset3D # CTDataset3D is imported here
 from data.utils import get_dynamic_image_path
 from training.metrics import compute_metrics
 from utils.logging_config import setup_logging
@@ -44,74 +44,95 @@ class ModelEvaluator:
     """Comprehensive model evaluation class"""
     
     def __init__(self, config: Config, model_path: str, device: str = 'auto'):
-        self.config = config
+        self.config = config # Store config instance
         self.model_path = Path(model_path)
         self.device = self._setup_device(device)
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(__name__) # Use standard logger
         
         # Load model
         self.model = self._load_model()
         
-    def _setup_device(self, device: str) -> torch.device:
+    def _setup_device(self, device_option: str) -> torch.device: # Renamed for clarity
         """Setup computation device"""
-        if device == 'auto':
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        return torch.device(device)
+        if device_option == 'auto':
+            selected_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        else:
+            selected_device = device_option
+        self.logger.info(f"Computation device set to: {selected_device}") # Log device selection
+        return torch.device(selected_device)
     
     def _load_model(self) -> nn.Module:
         """Load trained model from checkpoint"""
         if not self.model_path.exists():
+            self.logger.error(f"Model file not found: {self.model_path}") # Log error
             raise FileNotFoundError(f"Model file not found: {self.model_path}")
         
         # Create model architecture
-        if self.config.MODEL_TYPE == "resnet3d":
-            model = resnet18_3d(
+        # This uses config.MODEL_TYPE for model selection.
+        self.logger.info(f"Creating model architecture: {self.config.MODEL_TYPE}") # Log model type
+        if self.config.MODEL_TYPE == "resnet3d": # Check based on config
+            model = resnet18_3d( # Assuming resnet18 for this example, could be made more dynamic
                 num_classes=self.config.NUM_PATHOLOGIES,
                 use_checkpointing=False  # Disable checkpointing for inference
             )
+            self.logger.info(f"Instantiated ResNet3D-18 for {self.config.NUM_PATHOLOGIES} classes.")
+        # Add other model types here if needed (e.g., densenet3d)
+        # elif self.config.MODEL_TYPE == "densenet3d":
+        #     model = densenet121_3d(num_classes=self.config.NUM_PATHOLOGIES, use_checkpointing=False)
+        #     self.logger.info(f"Instantiated DenseNet3D-121 for {self.config.NUM_PATHOLOGIES} classes.")
         else:
+            self.logger.error(f"Unknown model type specified in config: {self.config.MODEL_TYPE}") # Log error
             raise ValueError(f"Unknown model type: {self.config.MODEL_TYPE}")
         
         # Load weights
+        self.logger.info(f"Loading model weights from: {self.model_path}") # Log path
         checkpoint = torch.load(self.model_path, map_location=self.device)
         
         if 'model_state_dict' in checkpoint:
             model.load_state_dict(checkpoint['model_state_dict'])
-            self.logger.info(f"Loaded model from epoch {checkpoint.get('epoch', 'unknown')}")
+            # Log epoch if available in checkpoint
+            epoch_info = checkpoint.get('epoch', 'unknown')
+            self.logger.info(f"Loaded model state_dict from epoch {epoch_info}.")
         else:
+            # Assumes the checkpoint is the state_dict itself
             model.load_state_dict(checkpoint)
-            self.logger.info("Loaded model weights")
+            self.logger.info("Loaded model state_dict directly (no epoch info in checkpoint).")
         
-        model = model.to(self.device)
-        model.eval()
+        model = model.to(self.device) # Move model to the specified device
+        model.eval() # Set model to evaluation mode
         
-        self.logger.info(f"Model loaded successfully on {self.device}")
+        self.logger.info(f"Model loaded successfully on {self.device} and set to evaluation mode.")
         return model
     
     def _prepare_dataset(self, dataset_type: str = 'validation') -> Tuple[pd.DataFrame, Path]:
         """Prepare dataset for evaluation"""
+        self.logger.info(f"Preparing dataset for '{dataset_type}' evaluation.") # Log dataset type
         if dataset_type == 'validation':
             volumes_csv = self.config.SELECTED_VALID_VOLUMES_CSV
             labels_csv = self.config.VALID_LABELS_CSV
             img_dir = self.config.VALID_IMG_DIR
-        elif dataset_type == 'train':
+        elif dataset_type == 'train': # Added train dataset option
             volumes_csv = self.config.SELECTED_TRAIN_VOLUMES_CSV
             labels_csv = self.config.TRAIN_LABELS_CSV
             img_dir = self.config.TRAIN_IMG_DIR
         else:
+            self.logger.error(f"Unknown dataset type for evaluation: {dataset_type}") # Log error
             raise ValueError(f"Unknown dataset type: {dataset_type}")
         
         # Load and merge data
+        self.logger.info(f"Loading volumes from: {volumes_csv}") # Log path
+        self.logger.info(f"Loading labels from: {labels_csv}") # Log path
         volumes_df = pd.read_csv(volumes_csv)[['VolumeName']]
         labels_df = pd.read_csv(labels_csv)
         
         eval_df = pd.merge(volumes_df, labels_df, on='VolumeName', how='inner')
+        # Fill NaN and convert pathology columns to int
         eval_df[self.config.PATHOLOGY_COLUMNS] = eval_df[self.config.PATHOLOGY_COLUMNS].fillna(0).astype(int)
         
-        self.logger.info(f"Loaded {len(eval_df)} samples for {dataset_type} evaluation")
+        self.logger.info(f"Loaded {len(eval_df)} samples for {dataset_type} evaluation.")
         return eval_df, img_dir
     
-    @torch.no_grad()
+    @torch.no_grad() # Disable gradient calculations for evaluation
     def evaluate_dataset(self, dataset_type: str = 'validation', 
                         save_predictions: bool = True) -> Dict:
         """Evaluate model on specified dataset"""
@@ -122,373 +143,461 @@ class ModelEvaluator:
         eval_df, img_dir = self._prepare_dataset(dataset_type)
         
         # Create dataset and dataloader
+        self.logger.info("Creating evaluation CTDataset3D instance.") # Log dataset creation
         eval_dataset = CTDataset3D(
-            eval_df, img_dir, self.config.PATHOLOGY_COLUMNS,
-            self.config.TARGET_SPACING, self.config.TARGET_SHAPE_DHW,
-            self.config.CLIP_HU_MIN, self.config.CLIP_HU_MAX,
-            use_cache=self.config.USE_CACHE, cache_dir=self.config.CACHE_DIR,
-            augment=False  # No augmentation for evaluation
+            dataframe=eval_df, # Pass dataframe
+            img_dir=img_dir, 
+            pathology_columns=self.config.PATHOLOGY_COLUMNS,
+            target_spacing_xyz=self.config.TARGET_SPACING, 
+            target_shape_dhw=self.config.TARGET_SHAPE_DHW,
+            clip_hu_min=self.config.CLIP_HU_MIN, 
+            clip_hu_max=self.config.CLIP_HU_MAX,
+            use_cache=self.config.USE_CACHE, 
+            cache_dir=self.config.CACHE_DIR,
+            augment=False,  # No augmentation for evaluation
+            orientation_axcodes=self.config.ORIENTATION_AXCODES # Pass orientation config
         )
         
         eval_loader = DataLoader(
             eval_dataset, 
             batch_size=self.config.BATCH_SIZE, 
-            shuffle=False,
+            shuffle=False, # No shuffle for evaluation
             num_workers=self.config.NUM_WORKERS, 
-            pin_memory=self.config.PIN_MEMORY
+            pin_memory=self.config.PIN_MEMORY,
+            persistent_workers=self.config.NUM_WORKERS > 0 # Keep workers alive if num_workers > 0
         )
         
         # Collect predictions and labels
-        all_predictions = []
-        all_labels = []
-        all_volume_names = []
+        all_predictions = [] # Stores raw model outputs (logits)
+        all_labels = [] # Stores true labels
+        all_volume_names = [] # Stores volume names for traceability
         
-        self.model.eval()
+        self.model.eval() # Ensure model is in evaluation mode
+        self.logger.info(f"Iterating through DataLoader for {dataset_type} set...") # Log loader iteration
         for batch_idx, batch in enumerate(eval_loader):
+            # Move data to the configured device
             pixel_values = batch["pixel_values"].to(self.device, non_blocking=True)
             labels = batch["labels"].to(self.device, non_blocking=True)
-            volume_names = batch["volume_name"]
+            volume_names = batch["volume_name"] # List of volume names in the batch
             
-            # Forward pass
+            # Forward pass through the model
             outputs = self.model(pixel_values)
             
-            # Collect results
+            # Collect results, moving to CPU and converting to NumPy arrays
             all_predictions.append(outputs.cpu().numpy())
             all_labels.append(labels.cpu().numpy())
-            all_volume_names.extend(volume_names)
+            all_volume_names.extend(volume_names) # Extend list of volume names
             
-            if (batch_idx + 1) % 10 == 0:
-                self.logger.info(f"Processed {batch_idx + 1}/{len(eval_loader)} batches")
+            # Log progress periodically
+            if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == len(eval_loader): # Log every 10 batches or last batch
+                self.logger.info(f"Processed {batch_idx + 1}/{len(eval_loader)} batches for {dataset_type} evaluation.")
         
-        # Concatenate all results
-        predictions = np.concatenate(all_predictions, axis=0)
-        labels = np.concatenate(all_labels, axis=0)
+        # Concatenate all results from batches
+        predictions_np = np.concatenate(all_predictions, axis=0) # Corrected variable name
+        labels_np = np.concatenate(all_labels, axis=0) # Corrected variable name
         
-        # Convert predictions to probabilities
-        probabilities = 1 / (1 + np.exp(-predictions))  # Sigmoid
+        # Convert predictions (logits) to probabilities using sigmoid
+        probabilities_np = 1 / (1 + np.exp(-predictions_np)) # Sigmoid function
         
-        # Compute metrics
-        metrics = compute_metrics(predictions, labels, self.config.PATHOLOGY_COLUMNS)
+        # Compute metrics using the dedicated metrics computation function
+        self.logger.info("Computing metrics from predictions and labels.") # Log metrics computation
+        metrics = compute_metrics(predictions_np, labels_np, self.config.PATHOLOGY_COLUMNS) # Pass logits
         
         # Prepare results dictionary
         results = {
             'dataset_type': dataset_type,
-            'num_samples': len(labels),
+            'num_samples': len(labels_np), # Use length of concatenated labels
             'metrics': metrics,
-            'predictions': predictions,
-            'probabilities': probabilities,
-            'labels': labels,
-            'volume_names': all_volume_names,
-            'pathology_columns': self.config.PATHOLOGY_COLUMNS
+            'predictions_logits': predictions_np, # Store raw logits
+            'probabilities': probabilities_np, # Store probabilities
+            'labels': labels_np, # Store true labels
+            'volume_names': all_volume_names, # Store volume names
+            'pathology_columns': self.config.PATHOLOGY_COLUMNS # Store pathology names
         }
         
-        # Save predictions if requested
+        # Save predictions to a CSV file if requested
         if save_predictions:
-            self._save_predictions(results, dataset_type)
+            self._save_predictions(results, dataset_type) # Call helper to save
         
-        self.logger.info(f"Evaluation completed on {len(labels)} samples")
-        self.logger.info(f"Overall AUC (macro): {metrics['roc_auc_macro']:.4f}")
-        self.logger.info(f"Overall F1 (macro): {metrics['f1_macro']:.4f}")
+        self.logger.info(f"Evaluation completed on {len(labels_np)} samples from {dataset_type} dataset.")
+        self.logger.info(f"Overall AUC (macro): {metrics.get('roc_auc_macro', float('nan')):.4f}") # Use .get for safety
+        self.logger.info(f"Overall F1 (macro): {metrics.get('f1_macro', float('nan')):.4f}") # Use .get for safety
         
         return results
     
     def _save_predictions(self, results: Dict, dataset_type: str):
-        """Save predictions to CSV file"""
-        output_dir = Path(self.config.OUTPUT_DIR)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        """Save predictions and probabilities to CSV file"""
+        output_dir = Path(self.config.OUTPUT_DIR) # Get output directory from config
+        output_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
         
-        # Create predictions DataFrame
+        # Prepare data for DataFrame
         predictions_data = []
+        num_samples = results['num_samples']
+        pathologies = results['pathology_columns']
         
-        for i, volume_name in enumerate(results['volume_names']):
-            row = {'VolumeName': volume_name}
-            
-            # Add true labels
-            for j, pathology in enumerate(self.config.PATHOLOGY_COLUMNS):
+        for i in range(num_samples):
+            row = {'VolumeName': results['volume_names'][i]}
+            for j, pathology in enumerate(pathologies):
                 row[f'{pathology}_true'] = int(results['labels'][i, j])
                 row[f'{pathology}_prob'] = float(results['probabilities'][i, j])
-                row[f'{pathology}_pred'] = int(results['probabilities'][i, j] > 0.5)
-            
+                # Binary prediction based on 0.5 threshold
+                row[f'{pathology}_pred'] = int(results['probabilities'][i, j] > 0.5) 
             predictions_data.append(row)
         
         predictions_df = pd.DataFrame(predictions_data)
         
-        # Save to CSV
-        predictions_file = output_dir / f'predictions_{dataset_type}.csv'
-        predictions_df.to_csv(predictions_file, index=False)
-        self.logger.info(f"Predictions saved to: {predictions_file}")
+        # Define file paths for predictions and metrics
+        predictions_file = output_dir / f'predictions_{dataset_type}_{self.model_path.stem}.csv' # Add model name to filename
+        metrics_file = output_dir / f'metrics_{dataset_type}_{self.model_path.stem}.json' # Add model name to filename
         
-        # Save metrics to JSON
-        metrics_file = output_dir / f'metrics_{dataset_type}.json'
-        with open(metrics_file, 'w') as f:
-            json.dump(results['metrics'], f, indent=2)
-        self.logger.info(f"Metrics saved to: {metrics_file}")
+        # Save predictions DataFrame to CSV
+        try:
+            predictions_df.to_csv(predictions_file, index=False)
+            self.logger.info(f"Predictions for {dataset_type} saved to: {predictions_file}")
+        except Exception as e:
+            self.logger.error(f"Failed to save predictions CSV to {predictions_file}: {e}") # Log error
+            
+        # Save metrics dictionary to JSON
+        try:
+            with open(metrics_file, 'w') as f:
+                # Use a helper to ensure all items in metrics are JSON serializable
+                serializable_metrics = {k: (v.tolist() if isinstance(v, np.ndarray) else v) 
+                                       for k, v in results['metrics'].items()}
+                json.dump(serializable_metrics, f, indent=2)
+            self.logger.info(f"Metrics for {dataset_type} saved to: {metrics_file}")
+        except Exception as e:
+            self.logger.error(f"Failed to save metrics JSON to {metrics_file}: {e}") # Log error
     
     def generate_evaluation_report(self, results: Dict, save_path: Optional[str] = None):
         """Generate comprehensive evaluation report with visualizations"""
         
+        # Define save path for the report image
         if save_path is None:
-            save_path = Path(self.config.OUTPUT_DIR) / f"evaluation_report_{results['dataset_type']}.png"
+            report_filename = f"evaluation_report_{results['dataset_type']}_{self.model_path.stem}.png" # Add model name
+            save_path = Path(self.config.OUTPUT_DIR) / report_filename
         else:
-            save_path = Path(save_path)
+            save_path = Path(save_path) # Ensure it's a Path object
+        save_path.parent.mkdir(parents=True, exist_ok=True) # Ensure output directory exists
+
+        self.logger.info(f"Generating evaluation report. Saving to: {save_path}") # Log save path
         
-        # Create figure
-        fig, axes = plt.subplots(3, 3, figsize=(20, 16))
-        fig.suptitle(f'Model Evaluation Report - {results["dataset_type"].title()} Set', 
-                    fontsize=16, fontweight='bold')
+        # Create figure for the report
+        fig, axes = plt.subplots(3, 3, figsize=(22, 18)) # Adjusted figsize
+        fig.suptitle(f'Model Evaluation Report - {results["dataset_type"].title()} Set\nModel: {self.model_path.name}', 
+                    fontsize=18, fontweight='bold') # Increased title font size
         
         # 1. Overall Metrics Bar Chart
         ax = axes[0, 0]
-        overall_metrics = ['roc_auc_macro', 'roc_auc_micro', 'f1_macro', 'f1_micro', 
-                          'accuracy', 'precision_macro', 'recall_macro']
-        metric_values = [results['metrics'][m] for m in overall_metrics]
-        metric_labels = [m.replace('_', ' ').title() for m in overall_metrics]
+        # Define which overall metrics to plot
+        overall_metrics_keys = ['roc_auc_macro', 'roc_auc_micro', 'f1_macro', 'f1_micro', 
+                                'accuracy', 'precision_macro', 'recall_macro']
+        metric_values = [results['metrics'].get(m, 0.0) for m in overall_metrics_keys] # Use .get for safety
+        metric_labels = [m.replace('_', ' ').title() for m in overall_metrics_keys]
         
-        bars = ax.bar(range(len(metric_values)), metric_values, color='skyblue')
-        ax.set_xticks(range(len(metric_values)))
-        ax.set_xticklabels(metric_labels, rotation=45, ha='right')
-        ax.set_ylabel('Score')
-        ax.set_title('Overall Performance Metrics')
-        ax.set_ylim(0, 1)
+        bars = ax.bar(metric_labels, metric_values, color='skyblue', width=0.6) # Adjusted bar width
+        ax.set_xticklabels(metric_labels, rotation=45, ha='right', fontsize=10) # Adjusted font size
+        ax.set_ylabel('Score', fontsize=12) # Adjusted font size
+        ax.set_title('Overall Performance Metrics', fontsize=14) # Adjusted font size
+        ax.set_ylim(0, 1.05) # Slightly higher limit for text
+        ax.grid(True, linestyle='--', alpha=0.7) # Added grid
         
         # Add value labels on bars
-        for bar, value in zip(bars, metric_values):
-            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
-                   f'{value:.3f}', ha='center', va='bottom')
+        for bar in bars:
+            yval = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2.0, yval + 0.01, f'{yval:.3f}', 
+                    ha='center', va='bottom', fontsize=9) # Adjusted font size
         
-        # 2. Per-Pathology AUC Scores
+        # 2. Per-Pathology AUC Scores (Horizontal Bar Chart)
         ax = axes[0, 1]
         pathology_aucs = []
-        pathology_names = []
+        pathology_names_short = [] # For shortened names
         
-        for pathology in self.config.PATHOLOGY_COLUMNS:
+        for pathology in results['pathology_columns']:
             auc_key = f"{pathology}_auc"
-            if auc_key in results['metrics']:
+            if auc_key in results['metrics']: # Check if AUC score exists for pathology
                 pathology_aucs.append(results['metrics'][auc_key])
-                pathology_names.append(pathology[:15] + '...' if len(pathology) > 15 else pathology)
+                # Shorten name if too long for display
+                name_to_display = pathology[:18] + '...' if len(pathology) > 18 else pathology 
+                pathology_names_short.append(name_to_display)
         
-        if pathology_aucs:
-            y_pos = np.arange(len(pathology_names))
-            bars = ax.barh(y_pos, pathology_aucs, color='lightgreen')
+        if pathology_aucs: # Proceed only if there are AUCs to plot
+            y_pos = np.arange(len(pathology_names_short))
+            bars = ax.barh(y_pos, pathology_aucs, color='lightgreen', height=0.7) # Adjusted bar height
             ax.set_yticks(y_pos)
-            ax.set_yticklabels(pathology_names)
-            ax.set_xlabel('AUC Score')
-            ax.set_title('Per-Pathology AUC Scores')
-            ax.set_xlim(0, 1)
-            
-            # Add value labels
-            for i, (bar, value) in enumerate(zip(bars, pathology_aucs)):
-                ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height()/2,
-                       f'{value:.3f}', ha='left', va='center')
+            ax.set_yticklabels(pathology_names_short, fontsize=9) # Adjusted font size
+            ax.set_xlabel('AUC Score', fontsize=12) # Adjusted font size
+            ax.set_title('Per-Pathology AUC Scores', fontsize=14) # Adjusted font size
+            ax.set_xlim(0, 1.05) # Slightly higher limit for text
+            ax.invert_yaxis() # Display top-performing pathologies at the top
+            ax.grid(True, linestyle='--', alpha=0.7, axis='x') # Grid on x-axis
+
+            # Add value labels on bars
+            for bar in bars:
+                width = bar.get_width()
+                ax.text(width + 0.01, bar.get_y() + bar.get_height()/2.0, f'{width:.3f}',
+                        ha='left', va='center', fontsize=8) # Adjusted font size
+        else:
+            ax.text(0.5, 0.5, "No per-pathology AUCs available.", ha='center', va='center') # Placeholder text
         
         # 3. ROC Curves for top pathologies
         ax = axes[0, 2]
-        top_pathologies = sorted(
-            [(p, results['metrics'][f"{p}_auc"]) for p in self.config.PATHOLOGY_COLUMNS 
-             if f"{p}_auc" in results['metrics']], 
+        # Sort pathologies by AUC to select top ones
+        auc_sorted_pathologies = sorted(
+            [(p, results['metrics'].get(f"{p}_auc", 0.0)) for p in results['pathology_columns']], 
             key=lambda x: x[1], reverse=True
-        )[:5]  # Top 5 pathologies by AUC
-        
-        for pathology, auc_score in top_pathologies:
-            pathology_idx = self.config.PATHOLOGY_COLUMNS.index(pathology)
+        )
+        top_n_roc = min(5, len(auc_sorted_pathologies)) # Plot up to 5 top pathologies
+
+        for i in range(top_n_roc):
+            pathology, auc_score = auc_sorted_pathologies[i]
+            pathology_idx = results['pathology_columns'].index(pathology)
             y_true = results['labels'][:, pathology_idx]
             y_prob = results['probabilities'][:, pathology_idx]
             
-            if len(np.unique(y_true)) > 1:  # Only if both classes present
+            # Ensure both classes are present for ROC curve calculation
+            if len(np.unique(y_true)) > 1:  
                 fpr, tpr, _ = roc_curve(y_true, y_prob)
-                ax.plot(fpr, tpr, label=f'{pathology[:15]}... (AUC={auc_score:.3f})')
+                # Shorten name for legend
+                legend_name = pathology[:15] + '...' if len(pathology) > 15 else pathology
+                ax.plot(fpr, tpr, label=f'{legend_name} (AUC={auc_score:.3f})', linewidth=1.5) # Adjusted linewidth
         
-        ax.plot([0, 1], [0, 1], 'k--', alpha=0.5)
-        ax.set_xlabel('False Positive Rate')
-        ax.set_ylabel('True Positive Rate')
-        ax.set_title('ROC Curves (Top 5 Pathologies)')
-        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        ax.grid(True, alpha=0.3)
+        ax.plot([0, 1], [0, 1], 'k--', alpha=0.6) # Diagonal reference line
+        ax.set_xlabel('False Positive Rate', fontsize=12) # Adjusted font size
+        ax.set_ylabel('True Positive Rate', fontsize=12) # Adjusted font size
+        ax.set_title(f'ROC Curves (Top {top_n_roc} Pathologies)', fontsize=14) # Adjusted font size
+        ax.legend(fontsize=8, loc='lower right') # Adjusted font size and location
+        ax.grid(True, linestyle='--', alpha=0.7) # Added grid
+        ax.set_aspect('equal', adjustable='box') # Make ROC plot square
         
-        # 4. Precision-Recall Curves
+        # 4. Precision-Recall Curves for top pathologies (same top N as ROC)
         ax = axes[1, 0]
-        for pathology, auc_score in top_pathologies:
-            pathology_idx = self.config.PATHOLOGY_COLUMNS.index(pathology)
+        for i in range(top_n_roc):
+            pathology, _ = auc_sorted_pathologies[i] # AUC score not needed for PR curve directly here
+            pathology_idx = results['pathology_columns'].index(pathology)
             y_true = results['labels'][:, pathology_idx]
             y_prob = results['probabilities'][:, pathology_idx]
             
-            if len(np.unique(y_true)) > 1:
+            if len(np.unique(y_true)) > 1: # Ensure both classes are present
                 precision, recall, _ = precision_recall_curve(y_true, y_prob)
-                ax.plot(recall, precision, label=f'{pathology[:15]}...')
+                legend_name = pathology[:15] + '...' if len(pathology) > 15 else pathology
+                ax.plot(recall, precision, label=f'{legend_name}', linewidth=1.5) # Adjusted linewidth
         
-        ax.set_xlabel('Recall')
-        ax.set_ylabel('Precision')
-        ax.set_title('Precision-Recall Curves')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+        ax.set_xlabel('Recall', fontsize=12) # Adjusted font size
+        ax.set_ylabel('Precision', fontsize=12) # Adjusted font size
+        ax.set_title('Precision-Recall Curves', fontsize=14) # Adjusted font size
+        ax.legend(fontsize=8, loc='lower left') # Adjusted font size and location
+        ax.grid(True, linestyle='--', alpha=0.7) # Added grid
+        ax.set_aspect('equal', adjustable='box') # Make PR plot square
         
-        # 5. Prediction Distribution
+        # 5. Prediction Probability Distribution
         ax = axes[1, 1]
-        all_probs = results['probabilities'].flatten()
-        ax.hist(all_probs, bins=50, alpha=0.7, density=True, color='orange')
-        ax.set_xlabel('Predicted Probability')
-        ax.set_ylabel('Density')
-        ax.set_title('Distribution of Predicted Probabilities')
-        ax.grid(True, alpha=0.3)
+        all_probs_flat = results['probabilities'].flatten() # Flatten all probabilities
+        sns.histplot(all_probs_flat, bins=50, kde=True, ax=ax, color='teal', stat="density") # Added KDE
+        ax.set_xlabel('Predicted Probability', fontsize=12) # Adjusted font size
+        ax.set_ylabel('Density', fontsize=12) # Adjusted font size
+        ax.set_title('Distribution of Predicted Probabilities', fontsize=14) # Adjusted font size
+        ax.grid(True, linestyle='--', alpha=0.7) # Added grid
         
-        # 6. Calibration Plot
+        # 6. Calibration Plot (Overall)
         ax = axes[1, 2]
-        all_labels = results['labels'].flatten()
-        all_probs = results['probabilities'].flatten()
-        
-        if len(np.unique(all_labels)) > 1:
+        all_labels_flat = results['labels'].flatten() # Flatten all labels
+        # Ensure both classes are present for calibration curve
+        if len(np.unique(all_labels_flat)) > 1 and len(all_labels_flat) == len(all_probs_flat):
             fraction_of_positives, mean_predicted_value = calibration_curve(
-                all_labels, all_probs, n_bins=10
+                all_labels_flat, all_probs_flat, n_bins=10, strategy='uniform' # Uniform strategy
             )
-            ax.plot(mean_predicted_value, fraction_of_positives, "s-", label="Model")
-            ax.plot([0, 1], [0, 1], "k:", label="Perfectly calibrated")
-            ax.set_xlabel('Mean Predicted Probability')
-            ax.set_ylabel('Fraction of Positives')
-            ax.set_title('Calibration Plot')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-        
-        # 7. F1 Scores per Pathology
+            ax.plot(mean_predicted_value, fraction_of_positives, "s-", label="Model", markersize=5) # Added markersize
+            ax.plot([0, 1], [0, 1], "k:", label="Perfectly Calibrated", alpha=0.7) # Adjusted alpha
+            ax.set_xlabel('Mean Predicted Probability (Bin)', fontsize=12) # Adjusted font size
+            ax.set_ylabel('Fraction of Positives (Bin)', fontsize=12) # Adjusted font size
+            ax.set_title('Calibration Plot (Overall)', fontsize=14) # Adjusted font size
+            ax.legend(fontsize=9) # Adjusted font size
+            ax.grid(True, linestyle='--', alpha=0.7) # Added grid
+            ax.set_aspect('equal', adjustable='box') # Make plot square
+        else:
+            ax.text(0.5, 0.5, "Calibration plot not available\n(requires multiple classes).", ha='center', va='center')
+
+        # 7. Per-Pathology F1 Scores (Companion to AUC plot)
         ax = axes[2, 0]
         pathology_f1s = []
-        for pathology in self.config.PATHOLOGY_COLUMNS:
+        # Using pathology_names_short from AUC plot for consistency
+        for pathology in results['pathology_columns']: # Iterate in original order to match names if needed
             f1_key = f"{pathology}_f1"
             if f1_key in results['metrics']:
                 pathology_f1s.append(results['metrics'][f1_key])
+            else:
+                # If some pathologies were not in AUC plot due to missing AUC,
+                # ensure f1 list matches pathology_names_short length or handle carefully.
+                # For simplicity, assuming pathology_names_short is based on pathologies that have AUC.
+                # This plot should ideally use names for which F1 is available.
+                pass # Or append 0.0 if name is in pathology_names_short but F1 is missing
         
-        if pathology_f1s:
-            y_pos = np.arange(len(pathology_names))
-            bars = ax.barh(y_pos, pathology_f1s, color='lightcoral')
-            ax.set_yticks(y_pos)
-            ax.set_yticklabels(pathology_names)
-            ax.set_xlabel('F1 Score')
-            ax.set_title('Per-Pathology F1 Scores')
-            ax.set_xlim(0, 1)
+        # Re-filter names to match available F1 scores
+        pathology_names_for_f1 = []
+        pathology_f1_values_for_plot = []
+        for pathology in results['pathology_columns']:
+            f1_key = f"{pathology}_f1"
+            if f1_key in results['metrics']:
+                 name_to_display = pathology[:18] + '...' if len(pathology) > 18 else pathology
+                 pathology_names_for_f1.append(name_to_display)
+                 pathology_f1_values_for_plot.append(results['metrics'][f1_key])
+
+        if pathology_f1_values_for_plot:
+            y_pos_f1 = np.arange(len(pathology_names_for_f1))
+            bars_f1 = ax.barh(y_pos_f1, pathology_f1_values_for_plot, color='lightcoral', height=0.7)
+            ax.set_yticks(y_pos_f1)
+            ax.set_yticklabels(pathology_names_for_f1, fontsize=9)
+            ax.set_xlabel('F1 Score', fontsize=12)
+            ax.set_title('Per-Pathology F1 Scores', fontsize=14)
+            ax.set_xlim(0, 1.05)
+            ax.invert_yaxis() 
+            ax.grid(True, linestyle='--', alpha=0.7, axis='x')
+            for bar in bars_f1: # Add labels
+                width = bar.get_width()
+                ax.text(width + 0.01, bar.get_y() + bar.get_height()/2.0, f'{width:.3f}',
+                        ha='left', va='center', fontsize=8)
+        else:
+            ax.text(0.5, 0.5, "No per-pathology F1s available.", ha='center', va='center')
         
-        # 8. Class Distribution
+        # 8. Class Distribution in Evaluated Set
         ax = axes[2, 1]
-        positive_counts = results['labels'].sum(axis=0)
-        negative_counts = len(results['labels']) - positive_counts
-        
-        x = np.arange(len(self.config.PATHOLOGY_COLUMNS))
-        width = 0.35
-        
-        ax.bar(x - width/2, positive_counts, width, label='Positive', color='green', alpha=0.7)
-        ax.bar(x + width/2, negative_counts, width, label='Negative', color='red', alpha=0.7)
-        
-        ax.set_xlabel('Pathology')
-        ax.set_ylabel('Count')
-        ax.set_title('Class Distribution')
-        ax.set_xticks(x)
-        ax.set_xticklabels([p[:10] + '...' if len(p) > 10 else p for p in self.config.PATHOLOGY_COLUMNS], 
-                          rotation=45, ha='right')
-        ax.legend()
-        
-        # 9. Summary Statistics
+        if results['labels'].size > 0: # Check if labels exist
+            positive_counts = results['labels'].sum(axis=0)
+            # Ensure no negative counts if sum is 0 (can happen with uint types if not careful)
+            negative_counts = len(results['labels']) - positive_counts 
+            
+            x_indices = np.arange(len(results['pathology_columns']))
+            width = 0.35 # Bar width
+            
+            rects1 = ax.bar(x_indices - width/2, positive_counts, width, label='Positive', color='forestgreen', alpha=0.8)
+            rects2 = ax.bar(x_indices + width/2, negative_counts, width, label='Negative', color='indianred', alpha=0.8)
+            
+            ax.set_xlabel('Pathology', fontsize=12)
+            ax.set_ylabel('Number of Samples', fontsize=12)
+            ax.set_title('Class Distribution in Evaluated Set', fontsize=14)
+            ax.set_xticks(x_indices)
+            # Shorten pathology names for x-axis labels
+            xtick_labels = [p[:10] + '...' if len(p) > 10 else p for p in results['pathology_columns']]
+            ax.set_xticklabels(xtick_labels, rotation=45, ha='right', fontsize=9)
+            ax.legend(fontsize=9)
+            ax.grid(True, linestyle='--', alpha=0.3, axis='y')
+        else:
+            ax.text(0.5,0.5, "Label data not available.", ha='center', va='center')
+
+        # 9. Summary Text Box
         ax = axes[2, 2]
-        ax.axis('off')
+        ax.axis('off') # Hide axes for text box
         
-        summary_text = f"Evaluation Summary\n"
-        summary_text += "=" * 30 + "\n\n"
-        summary_text += f"Dataset: {results['dataset_type'].title()}\n"
-        summary_text += f"Samples: {results['num_samples']}\n"
-        summary_text += f"Model: {self.config.MODEL_TYPE}\n\n"
-        summary_text += f"Overall Metrics:\n"
-        summary_text += f"  ROC AUC (Macro): {results['metrics']['roc_auc_macro']:.4f}\n"
-        summary_text += f"  F1 Score (Macro): {results['metrics']['f1_macro']:.4f}\n"
-        summary_text += f"  Accuracy: {results['metrics']['accuracy']:.4f}\n"
-        summary_text += f"  Precision (Macro): {results['metrics']['precision_macro']:.4f}\n"
-        summary_text += f"  Recall (Macro): {results['metrics']['recall_macro']:.4f}\n"
+        # Construct summary text
+        summary_text_lines = [
+            f"Evaluation Summary - {self.model_path.name}",
+            "=" * 35,
+            f"Dataset: {results['dataset_type'].title()}",
+            f"Samples: {results['num_samples']}",
+            f"Model Type: {self.config.MODEL_TYPE}",
+            "",
+            "Overall Metrics:",
+            f"  ROC AUC (Macro): {results['metrics'].get('roc_auc_macro', 'N/A'):.4f}",
+            f"  F1 Score (Macro): {results['metrics'].get('f1_macro', 'N/A'):.4f}",
+            f"  Accuracy: {results['metrics'].get('accuracy', 'N/A'):.4f}",
+            f"  Precision (Macro): {results['metrics'].get('precision_macro', 'N/A'):.4f}",
+            f"  Recall (Macro): {results['metrics'].get('recall_macro', 'N/A'):.4f}",
+        ]
+        summary_text = "\n".join(summary_text_lines)
         
-        ax.text(0.05, 0.95, summary_text, transform=ax.transAxes, 
-               fontsize=12, verticalalignment='top', fontfamily='monospace',
-               bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
+        ax.text(0.02, 0.98, summary_text, transform=ax.transAxes, 
+               fontsize=10, verticalalignment='top', fontfamily='monospace',
+               bbox=dict(boxstyle='round,pad=0.5', facecolor='aliceblue', alpha=0.9)) # Adjusted bbox
         
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        self.logger.info(f"Evaluation report saved to: {save_path}")
-        plt.close()
+        # Adjust layout to prevent overlap and save
+        plt.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust rect to make space for suptitle
+        try:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            self.logger.info(f"Evaluation report saved successfully to: {save_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to save evaluation report to {save_path}: {e}") # Log error
+        plt.close(fig) # Close the figure to free memory
     
     def compare_thresholds(self, results: Dict, pathology: str, save_path: Optional[str] = None):
         """Analyze performance at different thresholds for a specific pathology"""
         
         if pathology not in self.config.PATHOLOGY_COLUMNS:
+            self.logger.error(f"Pathology '{pathology}' not found in configuration.") # Log error
             raise ValueError(f"Pathology '{pathology}' not found in configuration")
         
         pathology_idx = self.config.PATHOLOGY_COLUMNS.index(pathology)
         y_true = results['labels'][:, pathology_idx]
         y_prob = results['probabilities'][:, pathology_idx]
         
-        if len(np.unique(y_true)) <= 1:
-            self.logger.warning(f"Only one class present for {pathology}, skipping threshold analysis")
-            return
+        if len(np.unique(y_true)) <= 1: # Check if only one class is present
+            self.logger.warning(f"Only one class present for {pathology}, skipping threshold analysis.")
+            return None, None # Return None if analysis cannot be performed
         
-        # Test different thresholds
-        thresholds = np.arange(0.1, 1.0, 0.05)
+        # Define thresholds to test
+        thresholds = np.linspace(0.05, 0.95, 19) # More granular thresholds
         metrics_at_thresholds = {
-            'threshold': [],
-            'f1': [],
-            'precision': [],
-            'recall': [],
-            'specificity': [],
-            'accuracy': []
+            'threshold': [], 'f1': [], 'precision': [], 'recall': [],
+            'specificity': [], 'accuracy': []
         }
         
-        for threshold in thresholds:
-            y_pred = (y_prob >= threshold).astype(int)
+        # Calculate metrics for each threshold
+        for threshold_val in thresholds: # Renamed variable
+            y_pred = (y_prob >= threshold_val).astype(int) # Predictions based on current threshold
             
-            # Calculate metrics
-            tn = np.sum((y_true == 0) & (y_pred == 0))
-            tp = np.sum((y_true == 1) & (y_pred == 1))
-            fn = np.sum((y_true == 1) & (y_pred == 0))
-            fp = np.sum((y_true == 0) & (y_pred == 1))
+            tn = np.sum((y_true == 0) & (y_pred == 0)) # True Negatives
+            tp = np.sum((y_true == 1) & (y_pred == 1)) # True Positives
+            fn = np.sum((y_true == 1) & (y_pred == 0)) # False Negatives
+            fp = np.sum((y_true == 0) & (y_pred == 1)) # False Positives
             
-            f1 = f1_score(y_true, y_pred, zero_division=0)
-            precision = precision_score(y_true, y_pred, zero_division=0)
-            recall = recall_score(y_true, y_pred, zero_division=0)
-            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-            accuracy = accuracy_score(y_true, y_pred)
-            
-            metrics_at_thresholds['threshold'].append(threshold)
-            metrics_at_thresholds['f1'].append(f1)
-            metrics_at_thresholds['precision'].append(precision)
-            metrics_at_thresholds['recall'].append(recall)
-            metrics_at_thresholds['specificity'].append(specificity)
-            metrics_at_thresholds['accuracy'].append(accuracy)
+            # Calculate metrics, handling division by zero by setting to 0.0
+            metrics_at_thresholds['threshold'].append(threshold_val)
+            metrics_at_thresholds['f1'].append(f1_score(y_true, y_pred, zero_division=0))
+            metrics_at_thresholds['precision'].append(precision_score(y_true, y_pred, zero_division=0))
+            metrics_at_thresholds['recall'].append(recall_score(y_true, y_pred, zero_division=0))
+            metrics_at_thresholds['specificity'].append(tn / (tn + fp) if (tn + fp) > 0 else 0.0)
+            metrics_at_thresholds['accuracy'].append(accuracy_score(y_true, y_pred))
         
-        # Plot results
-        fig, ax = plt.subplots(figsize=(12, 8))
+        # Create plot
+        fig, ax = plt.subplots(figsize=(12, 7)) # Adjusted figsize
         
-        ax.plot(thresholds, metrics_at_thresholds['f1'], 'o-', label='F1 Score', linewidth=2)
-        ax.plot(thresholds, metrics_at_thresholds['precision'], 's-', label='Precision', linewidth=2)
-        ax.plot(thresholds, metrics_at_thresholds['recall'], '^-', label='Recall', linewidth=2)
-        ax.plot(thresholds, metrics_at_thresholds['specificity'], 'd-', label='Specificity', linewidth=2)
-        ax.plot(thresholds, metrics_at_thresholds['accuracy'], 'v-', label='Accuracy', linewidth=2)
+        # Plot each metric vs threshold
+        ax.plot(metrics_at_thresholds['threshold'], metrics_at_thresholds['f1'], 'o-', label='F1 Score', linewidth=2, markersize=4)
+        ax.plot(metrics_at_thresholds['threshold'], metrics_at_thresholds['precision'], 's-', label='Precision', linewidth=2, markersize=4)
+        ax.plot(metrics_at_thresholds['threshold'], metrics_at_thresholds['recall'], '^-', label='Recall (Sensitivity)', linewidth=2, markersize=4)
+        ax.plot(metrics_at_thresholds['threshold'], metrics_at_thresholds['specificity'], 'd-', label='Specificity', linewidth=2, markersize=4)
+        # ax.plot(metrics_at_thresholds['threshold'], metrics_at_thresholds['accuracy'], 'v-', label='Accuracy', linewidth=2, markersize=4) # Accuracy often less informative here
         
-        # Find optimal threshold (max F1)
+        # Find optimal threshold (e.g., maximizing F1-score)
         best_f1_idx = np.argmax(metrics_at_thresholds['f1'])
-        best_threshold = thresholds[best_f1_idx]
-        best_f1 = metrics_at_thresholds['f1'][best_f1_idx]
+        best_threshold_val = metrics_at_thresholds['threshold'][best_f1_idx] # Renamed variable
+        best_f1_score = metrics_at_thresholds['f1'][best_f1_idx] # Renamed variable
         
-        ax.axvline(x=best_threshold, color='red', linestyle='--', alpha=0.7, 
-                  label=f'Optimal Threshold: {best_threshold:.2f} (F1={best_f1:.3f})')
+        ax.axvline(x=best_threshold_val, color='crimson', linestyle='--', alpha=0.8, 
+                  label=f'Optimal Thr (Max F1): {best_threshold_val:.2f} (F1={best_f1_score:.3f})')
         
-        ax.set_xlabel('Threshold')
-        ax.set_ylabel('Score')
-        ax.set_title(f'Performance vs Threshold - {pathology}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        ax.set_ylim(0, 1)
-        
+        ax.set_xlabel('Threshold', fontsize=12) # Adjusted font size
+        ax.set_ylabel('Score', fontsize=12) # Adjusted font size
+        ax.set_title(f'Performance vs. Threshold - {pathology}', fontsize=14) # Adjusted font size
+        ax.legend(fontsize=10) # Adjusted font size
+        ax.grid(True, linestyle='--', alpha=0.7) # Added grid
+        ax.set_ylim(-0.05, 1.05) # Set y-axis limits
+        ax.set_xticks(np.arange(0, 1.01, 0.1)) # Set x-axis ticks for clarity
+
+        # Define save path for the threshold analysis plot
         if save_path is None:
-            save_path = Path(self.config.OUTPUT_DIR) / f"threshold_analysis_{pathology.replace(' ', '_')}.png"
+            plot_filename = f"threshold_analysis_{pathology.replace(' ', '_').lower()}_{self.model_path.stem}.png" # Add model name
+            save_path = Path(self.config.OUTPUT_DIR) / plot_filename
+        save_path.parent.mkdir(parents=True, exist_ok=True) # Ensure directory exists
         
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        self.logger.info(f"Threshold analysis saved to: {save_path}")
-        plt.close()
+        try:
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            self.logger.info(f"Threshold analysis for '{pathology}' saved to: {save_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to save threshold analysis plot to {save_path}: {e}") # Log error
+        plt.close(fig) # Close figure
         
-        return metrics_at_thresholds, best_threshold
+        return pd.DataFrame(metrics_at_thresholds), best_threshold_val # Return DataFrame and best threshold
 
 
 def main():
@@ -496,92 +605,134 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate CT 3D Classifier')
     
     parser.add_argument('--model', type=str, required=True,
-                       help='Path to trained model checkpoint')
+                       help='Path to trained model checkpoint (.pth file)')
     parser.add_argument('--dataset', type=str, default='validation',
-                       choices=['validation', 'train'],
-                       help='Dataset to evaluate on')
+                       choices=['validation', 'train'], # Added 'train' option
+                       help='Dataset to evaluate on (default: validation)')
     parser.add_argument('--output-dir', type=str, default=None,
-                       help='Output directory for results')
+                       help='Output directory for results. If None, uses config.OUTPUT_DIR.')
     parser.add_argument('--device', type=str, default='auto',
                        choices=['auto', 'cuda', 'cpu'],
-                       help='Device to use for evaluation')
+                       help='Device to use for evaluation (default: auto)')
     parser.add_argument('--no-save-predictions', action='store_true',
-                       help='Do not save predictions to CSV')
+                       help='If set, do not save detailed predictions to CSV file.')
     parser.add_argument('--generate-report', action='store_true',
-                       help='Generate comprehensive evaluation report')
+                       help='If set, generate comprehensive visual evaluation report.')
     parser.add_argument('--threshold-analysis', type=str, default=None,
-                       help='Pathology name for threshold analysis')
+                       help='Name of a single pathology for threshold analysis plot generation.')
     parser.add_argument('--config-override', type=str, default=None,
-                       help='JSON file to override config parameters')
+                       help='Path to a JSON file to override specific config parameters.')
     
     args = parser.parse_args()
     
-    # Setup logging
-    logger = setup_logging('evaluation.log')
+    # Setup logging for the evaluation script
+    logger = setup_logging('evaluation.log') # Main logger for this script
     
     # Load configuration
     config = Config()
     
-    # Override output directory if specified
+    # Override output directory from CLI if specified
     if args.output_dir:
         config.OUTPUT_DIR = Path(args.output_dir)
+        logger.info(f"Output directory overridden by CLI: {config.OUTPUT_DIR}")
     
-    # Override config parameters if specified
-    if args.config_override and Path(args.config_override).exists():
-        with open(args.config_override, 'r') as f:
-            override_params = json.load(f)
-        for key, value in override_params.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
-                logger.info(f"Overrode config.{key} = {value}")
+    # Override config parameters from JSON file if specified
+    if args.config_override:
+        override_path = Path(args.config_override)
+        if override_path.exists():
+            logger.info(f"Loading config overrides from: {override_path}")
+            try:
+                with open(override_path, 'r') as f:
+                    override_params = json.load(f)
+                for key, value in override_params.items():
+                    if hasattr(config, key.upper()): # Match to uppercase config attributes
+                        setattr(config, key.upper(), value)
+                        logger.info(f"Config override: {key.upper()} = {value}")
+                    else:
+                        logger.warning(f"Config override key '{key.upper()}' not found in Config class.")
+            except Exception as e:
+                logger.error(f"Error loading config override file {override_path}: {e}")
+        else:
+            logger.warning(f"Config override file not found: {override_path}")
     
-    # Create evaluator
-    evaluator = ModelEvaluator(config, args.model, args.device)
+    # Create ModelEvaluator instance
+    try:
+        evaluator = ModelEvaluator(config, args.model, args.device)
+    except Exception as e:
+        logger.critical(f"Failed to initialize ModelEvaluator: {e}", exc_info=True) # Log critical error
+        sys.exit(1) # Exit if evaluator cannot be created
     
-    # Run evaluation
-    results = evaluator.evaluate_dataset(
-        dataset_type=args.dataset,
-        save_predictions=not args.no_save_predictions
-    )
+    # Run evaluation on the specified dataset
+    try:
+        results = evaluator.evaluate_dataset(
+            dataset_type=args.dataset,
+            save_predictions=not args.no_save_predictions # Save if flag is not set
+        )
+    except Exception as e:
+        logger.critical(f"Error during dataset evaluation: {e}", exc_info=True) # Log critical error
+        sys.exit(1) # Exit on evaluation failure
     
-    # Generate report if requested
+    # Generate visual report if requested
     if args.generate_report:
-        evaluator.generate_evaluation_report(results)
+        try:
+            evaluator.generate_evaluation_report(results)
+        except Exception as e:
+            logger.error(f"Error generating visual report: {e}", exc_info=True) # Log error
     
-    # Run threshold analysis if requested
+    # Perform threshold analysis for a specific pathology if requested
     if args.threshold_analysis:
-        evaluator.compare_thresholds(results, args.threshold_analysis)
+        try:
+            # Ensure the pathology name is valid before proceeding
+            if args.threshold_analysis not in config.PATHOLOGY_COLUMNS:
+                logger.error(f"Invalid pathology name for threshold analysis: '{args.threshold_analysis}'. "
+                             f"Available: {config.PATHOLOGY_COLUMNS}")
+            else:
+                evaluator.compare_thresholds(results, args.threshold_analysis)
+        except Exception as e:
+            logger.error(f"Error during threshold analysis for '{args.threshold_analysis}': {e}", exc_info=True)
     
-    # Print summary
-    metrics = results['metrics']
-    logger.info("\n" + "="*50)
-    logger.info("EVALUATION SUMMARY")
-    logger.info("="*50)
-    logger.info(f"Dataset: {args.dataset}")
-    logger.info(f"Samples: {results['num_samples']}")
-    logger.info(f"Model: {args.model}")
-    logger.info(f"\nOverall Metrics:")
-    logger.info(f"  ROC AUC (Macro): {metrics['roc_auc_macro']:.4f}")
-    logger.info(f"  ROC AUC (Micro): {metrics['roc_auc_micro']:.4f}")
-    logger.info(f"  F1 Score (Macro): {metrics['f1_macro']:.4f}")
-    logger.info(f"  Accuracy: {metrics['accuracy']:.4f}")
-    logger.info(f"  Precision (Macro): {metrics['precision_macro']:.4f}")
-    logger.info(f"  Recall (Macro): {metrics['recall_macro']:.4f}")
+    # Print summary of main metrics to console
+    metrics_summary = results.get('metrics', {}) # Get metrics dict, empty if not found
+    logger.info("\n" + "="*60)
+    logger.info("EVALUATION SUMMARY (from evaluate.py)")
+    logger.info("="*60)
+    logger.info(f"Model Evaluated: {args.model}")
+    logger.info(f"Evaluated Dataset: {args.dataset.title()}")
+    logger.info(f"Number of Samples: {results.get('num_samples', 'N/A')}")
+    logger.info("-" * 60)
+    logger.info("Overall Metrics:")
+    for metric_key in ['roc_auc_macro', 'roc_auc_micro', 'f1_macro', 'f1_micro', 'accuracy', 'precision_macro', 'recall_macro']:
+        value = metrics_summary.get(metric_key, float('nan')) # Default to NaN if metric missing
+        logger.info(f"  {metric_key.replace('_', ' ').title():<20}: {value:.4f}")
     
-    # Show top/bottom performing pathologies
-    pathology_aucs = [(p, metrics[f"{p}_auc"]) for p in config.PATHOLOGY_COLUMNS 
-                     if f"{p}_auc" in metrics]
-    pathology_aucs.sort(key=lambda x: x[1], reverse=True)
-    
-    logger.info(f"\nTop 5 Pathologies by AUC:")
-    for i, (pathology, auc) in enumerate(pathology_aucs[:5]):
-        logger.info(f"  {i+1}. {pathology}: {auc:.4f}")
-    
-    logger.info(f"\nBottom 5 Pathologies by AUC:")
-    for i, (pathology, auc) in enumerate(pathology_aucs[-5:]):
-        logger.info(f"  {len(pathology_aucs)-4+i}. {pathology}: {auc:.4f}")
-    
-    logger.info("\nEvaluation completed successfully!")
+    # Log top/bottom performing pathologies by AUC
+    if metrics_summary: # Check if metrics were computed
+        pathology_aucs_list = []
+        for p_col in config.PATHOLOGY_COLUMNS:
+            auc_val = metrics_summary.get(f"{p_col}_auc", None)
+            if auc_val is not None:
+                pathology_aucs_list.append((p_col, auc_val))
+        
+        if pathology_aucs_list: # If any per-pathology AUCs exist
+            pathology_aucs_list.sort(key=lambda x: x[1], reverse=True) # Sort by AUC desc
+            
+            logger.info("-" * 60)
+            logger.info("Top 5 Pathologies by AUC:")
+            for i, (pathology, auc) in enumerate(pathology_aucs_list[:5]):
+                logger.info(f"  {i+1}. {pathology:<30}: {auc:.4f}")
+            
+            if len(pathology_aucs_list) > 5: # Only show bottom if more than 5
+                logger.info("\nBottom 5 Pathologies by AUC:")
+                # Iterate from end of list for bottom performers
+                for i, (pathology, auc) in enumerate(pathology_aucs_list[-5:]):
+                    logger.info(f"  {len(pathology_aucs_list)-4+i}. {pathology:<30}: {auc:.4f}")
+        else:
+            logger.info("Per-pathology AUC scores not available in metrics.")
+    else:
+        logger.warning("Metrics dictionary is empty, cannot display detailed performance.")
+
+    logger.info("="*60)
+    logger.info("Evaluation script completed successfully!")
 
 
 if __name__ == "__main__":

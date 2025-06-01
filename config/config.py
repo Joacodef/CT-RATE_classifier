@@ -38,6 +38,7 @@ class Config:
     TARGET_SHAPE_DHW = (96, 224, 224)  # Reduced depth for memory efficiency
     CLIP_HU_MIN = -1000
     CLIP_HU_MAX = 1000
+    ORIENTATION_AXCODES = "LPS" # Added: Target orientation for MONAI (e.g., "LPS", "RAS")
 
     # Training optimization
     GRADIENT_CHECKPOINTING = True
