@@ -34,7 +34,8 @@ from config.config import Config
 # Internal imports - models
 from models.resnet3d import resnet18_3d, resnet34_3d
 from models.densenet3d import densenet121_3d, densenet169_3d, densenet201_3d, densenet161_3d, densenet_small_3d, densenet_tiny_3d
-from models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d  # ADD THIS LINE
+from models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d
+
 from models.losses import FocalLoss 
 
 # Internal imports - data
@@ -62,9 +63,11 @@ def create_model(config: Config) -> nn.Module:
     """Create and return the 3D model based on the provided configuration."""
     
     model_type = config.MODEL_TYPE.lower()
+    # model_variant defaults to 'default' if not present in config, then lowercased.
     model_variant = getattr(config, 'MODEL_VARIANT', 'default').lower()
     
     if model_type == "resnet3d":
+        # ... (ResNet3D logic remains the same) ...
         if model_variant == "34":
             model = resnet34_3d(
                 num_classes=config.NUM_PATHOLOGIES,
@@ -79,6 +82,7 @@ def create_model(config: Config) -> nn.Module:
             logger.info(f"Created ResNet3D-18 model")
     
     elif model_type == "densenet3d":
+        # ... (DenseNet3D logic remains the same) ...
         densenet_models = {
             "121": densenet121_3d,
             "169": densenet169_3d,
@@ -88,13 +92,13 @@ def create_model(config: Config) -> nn.Module:
             "tiny": densenet_tiny_3d
         }
         
-        model_fn = densenet_models.get(model_variant, densenet121_3d)
+        model_fn = densenet_models.get(model_variant, densenet121_3d) # Default to 121 if variant unknown/default
         model = model_fn(
             num_classes=config.NUM_PATHOLOGIES,
             use_checkpointing=config.GRADIENT_CHECKPOINTING
         )
-        logger.info(f"Created DenseNet3D-{model_variant or '121'} model")
-    
+        logger.info(f"Created DenseNet3D-{model_variant if model_variant in densenet_models else '121'} model")
+
     elif model_type == "vit3d":
         vit_models = {
             "tiny": vit_tiny_3d,
@@ -103,19 +107,42 @@ def create_model(config: Config) -> nn.Module:
             "large": vit_large_3d
         }
         
+        # Default to vit_small_3d if the variant is not recognized or is 'default'
         model_fn = vit_models.get(model_variant, vit_small_3d)
+        actual_variant_name = model_variant if model_variant in vit_models else 'small (defaulted)'
         
-        # Get ViT-specific config options
-        patch_size = getattr(config, 'VIT_PATCH_SIZE', (16, 16, 16))
+        # Get ViT-specific config options to potentially override variant defaults
+        patch_size = getattr(config, 'VIT_PATCH_SIZE', (16, 16, 16)) # Default patch size
         
+        # Prepare kwargs for model_fn, allowing config to override variant defaults
+        vit_custom_kwargs = {}
+        if hasattr(config, 'VIT_EMBED_DIM') and config.VIT_EMBED_DIM is not None:
+            vit_custom_kwargs['embed_dim'] = config.VIT_EMBED_DIM
+        if hasattr(config, 'VIT_DEPTH') and config.VIT_DEPTH is not None:
+            vit_custom_kwargs['depth'] = config.VIT_DEPTH
+        if hasattr(config, 'VIT_NUM_HEADS') and config.VIT_NUM_HEADS is not None:
+            vit_custom_kwargs['num_heads'] = config.VIT_NUM_HEADS
+        
+        # Add other ViT parameters from config if they are meant to be configurable
+        # Example: mlp_ratio, qkv_bias, drop_rate, attn_drop_rate
+        # if hasattr(config, 'VIT_MLP_RATIO') and config.VIT_MLP_RATIO is not None:
+        #     vit_custom_kwargs['mlp_ratio'] = config.VIT_MLP_RATIO
+
         model = model_fn(
             num_classes=config.NUM_PATHOLOGIES,
             use_checkpointing=config.GRADIENT_CHECKPOINTING,
-            volume_size=config.TARGET_SHAPE_DHW,
-            patch_size=patch_size
+            volume_size=config.TARGET_SHAPE_DHW, # Essential for ViT patch embedding
+            patch_size=patch_size,               # Essential for ViT patch embedding
+            **vit_custom_kwargs                  # Pass other custom ViT parameters
         )
-        logger.info(f"Created ViT3D-{model_variant or 'small'} model with patch_size={patch_size}")
-    
+        log_message = (
+            f"Created ViT3D-{actual_variant_name} model "
+            f"with patch_size={patch_size}"
+        )
+        if vit_custom_kwargs:
+            log_message += f" and custom_kwargs={vit_custom_kwargs}"
+        logger.info(log_message)
+            
     else:
         raise ValueError(f"Unknown model type: {config.MODEL_TYPE}")
     

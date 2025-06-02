@@ -67,22 +67,14 @@ class ModelEvaluator:
             self.logger.error(f"Model file not found: {self.model_path}") # Log error
             raise FileNotFoundError(f"Model file not found: {self.model_path}")
         
-        # Create model architecture
-        # This uses config.MODEL_TYPE for model selection.
-        self.logger.info(f"Creating model architecture: {self.config.MODEL_TYPE}") # Log model type
-        if self.config.MODEL_TYPE == "resnet3d": # Check based on config
-            model = resnet18_3d( # Assuming resnet18 for this example, could be made more dynamic
-                num_classes=self.config.NUM_PATHOLOGIES,
-                use_checkpointing=False  # Disable checkpointing for inference
-            )
-            self.logger.info(f"Instantiated ResNet3D-18 for {self.config.NUM_PATHOLOGIES} classes.")
-        # Add other model types here if needed (e.g., densenet3d)
-        # elif self.config.MODEL_TYPE == "densenet3d":
-        #     model = densenet121_3d(num_classes=self.config.NUM_PATHOLOGIES, use_checkpointing=False)
-        #     self.logger.info(f"Instantiated DenseNet3D-121 for {self.config.NUM_PATHOLOGIES} classes.")
-        else:
-            self.logger.error(f"Unknown model type specified in config: {self.config.MODEL_TYPE}") # Log error
-            raise ValueError(f"Unknown model type: {self.config.MODEL_TYPE}")
+        # Create model architecture using the centralized create_model function
+        self.logger.info(f"Creating model architecture: {self.config.MODEL_TYPE} (variant: {getattr(self.config, 'MODEL_VARIANT', 'default')}) using create_model.")
+        # Ensure gradient checkpointing is disabled for evaluation/inference
+        original_gradient_checkpointing_setting = self.config.GRADIENT_CHECKPOINTING
+        self.config.GRADIENT_CHECKPOINTING = False
+        model = create_model(self.config)
+        self.config.GRADIENT_CHECKPOINTING = original_gradient_checkpointing_setting # Restore original setting
+        self.logger.info(f"Model created for {self.config.NUM_PATHOLOGIES} classes.")
         
         # Load weights
         self.logger.info(f"Loading model weights from: {self.model_path}") # Log path

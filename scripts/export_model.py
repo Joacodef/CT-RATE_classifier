@@ -55,8 +55,13 @@ def main():
     config = Config()
     device = torch.device(args.device)
     
-    # Load model
-    model = resnet18_3d(num_classes=config.NUM_PATHOLOGIES, use_checkpointing=False)
+    # Create model using the centralized create_model function
+    # Ensure gradient checkpointing is typically disabled for export
+    original_gradient_checkpointing_setting = config.GRADIENT_CHECKPOINTING
+    config.GRADIENT_CHECKPOINTING = False # Disable for export
+    model = create_model(config)
+    config.GRADIENT_CHECKPOINTING = original_gradient_checkpointing_setting # Restore
+    logger.info(f"Model {config.MODEL_TYPE} (variant: {getattr(config, 'MODEL_VARIANT', 'default')}) created for export.")
     checkpoint = torch.load(args.model, map_location=device)
     
     if 'model_state_dict' in checkpoint:

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import os
 
 class Config:
-    load_dotenv( Path(__file__).parent/".env" )  # Load environment variables from .env file
+    load_dotenv( Path(__file__).parent.parent/".env" )  # Load environment variables from .env file
     # Data paths
     TRAIN_IMG_DIR = Path(os.getenv("CT_FULL_TRAIN_DIR"))
     VALID_IMG_DIR = Path(os.getenv("CT_FULL_VALID_DIR"))
@@ -36,11 +36,11 @@ class Config:
 
     # Training parameters
     NUM_EPOCHS = 30
-    BATCH_SIZE = 2
+    BATCH_SIZE = 4
     GRADIENT_ACCUMULATION_STEPS = 4
     LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 0.01
-    NUM_WORKERS = 0
+    NUM_WORKERS = 8
     PIN_MEMORY = True
 
     # Image processing

@@ -132,7 +132,7 @@ class VisionTransformer3D(nn.Module):
         super().__init__()
         
         self.num_classes = num_classes
-        self.embed_dim = embed_dim
+        self.embed_dim = embed_dim # This will be set by the final kwargs
         self.use_checkpointing = use_checkpointing
         
         # Patch embedding
@@ -214,31 +214,63 @@ class VisionTransformer3D(nn.Module):
 
 def vit_tiny_3d(num_classes=18, use_checkpointing=False, **kwargs):
     """Tiny ViT model for 3D volumes (faster training, less memory)"""
-    return VisionTransformer3D(
-        embed_dim=192, depth=12, num_heads=3, mlp_ratio=4,
-        num_classes=num_classes, use_checkpointing=use_checkpointing, **kwargs
-    )
+    # Define default parameters for this variant
+    model_kwargs = {
+        'embed_dim': 192, 
+        'depth': 12, 
+        'num_heads': 3, 
+        'mlp_ratio': 4.0,
+        'num_classes': num_classes, 
+        'use_checkpointing': use_checkpointing
+    }
+    # Allow kwargs passed from create_model to override these defaults
+    model_kwargs.update(kwargs)
+    return VisionTransformer3D(**model_kwargs)
 
 
 def vit_small_3d(num_classes=18, use_checkpointing=False, **kwargs):
     """Small ViT model for 3D volumes"""
-    return VisionTransformer3D(
-        embed_dim=384, depth=12, num_heads=6, mlp_ratio=4,
-        num_classes=num_classes, use_checkpointing=use_checkpointing, **kwargs
-    )
+    # Define default parameters for this variant
+    model_kwargs = {
+        'embed_dim': 384, 
+        'depth': 12, 
+        'num_heads': 6, 
+        'mlp_ratio': 4.0,
+        'num_classes': num_classes, 
+        'use_checkpointing': use_checkpointing
+    }
+    # Allow kwargs passed from create_model to override these defaults
+    model_kwargs.update(kwargs)
+    return VisionTransformer3D(**model_kwargs)
 
 
 def vit_base_3d(num_classes=18, use_checkpointing=False, **kwargs):
     """Base ViT model for 3D volumes"""
-    return VisionTransformer3D(
-        embed_dim=768, depth=12, num_heads=12, mlp_ratio=4,
-        num_classes=num_classes, use_checkpointing=use_checkpointing, **kwargs
-    )
+    # Define default parameters for this variant
+    model_kwargs = {
+        'embed_dim': 768, 
+        'depth': 12, 
+        'num_heads': 12, 
+        'mlp_ratio': 4.0,
+        'num_classes': num_classes, 
+        'use_checkpointing': use_checkpointing
+    }
+    # Allow kwargs passed from create_model to override these defaults
+    model_kwargs.update(kwargs)
+    return VisionTransformer3D(**model_kwargs)
 
 
 def vit_large_3d(num_classes=18, use_checkpointing=False, **kwargs):
     """Large ViT model for 3D volumes (requires significant memory)"""
-    return VisionTransformer3D(
-        embed_dim=1024, depth=24, num_heads=16, mlp_ratio=4,
-        num_classes=num_classes, use_checkpointing=use_checkpointing, **kwargs
-    )
+    # Define default parameters for this variant
+    model_kwargs = {
+        'embed_dim': 1024, 
+        'depth': 24, 
+        'num_heads': 16, 
+        'mlp_ratio': 4.0,
+        'num_classes': num_classes, 
+        'use_checkpointing': use_checkpointing
+    }
+    # Allow kwargs passed from create_model to override these defaults
+    model_kwargs.update(kwargs)
+    return VisionTransformer3D(**model_kwargs)
