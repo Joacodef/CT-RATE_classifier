@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 # Import validate_epoch from the trainer module
 from training.trainer import create_model, load_and_prepare_data, train_epoch, validate_epoch, train_model
-from config.config import Config
+from config import Config
 from models.resnet3d import ResNet3D
 
 # --- Test Class Definition for create_model ---

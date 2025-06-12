@@ -21,7 +21,7 @@ import wandb
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
-from config.config import Config
+from config import Config
 
 # Internal imports - models
 from models.resnet3d import resnet18_3d, resnet34_3d

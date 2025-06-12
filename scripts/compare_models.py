@@ -15,7 +15,7 @@ import numpy as np
 sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts.evaluate import ModelEvaluator
-from config.config import Config
+from config import Config
 from utils.logging_config import setup_logging
 
 def compare_models(model_paths: list, model_names: list, config: Config, dataset_type: str = 'validation'):

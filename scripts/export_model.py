@@ -14,7 +14,8 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'src'))
 
-from config.config import Config
+from config import Config
+from training.trainer import create_model
 from models.resnet3d import resnet18_3d
 from utils.logging_config import setup_logging
 
