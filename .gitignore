@@ -6,3 +6,4 @@ __pycache__
 *.ipynb
 *.wandb
 wandb/
+config/config.py
