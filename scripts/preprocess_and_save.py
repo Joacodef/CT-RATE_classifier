@@ -29,9 +29,10 @@ from tqdm import tqdm
 
 # Add the project root to the Python path to allow for absolute imports from
 # other modules like 'config' and 'data'.
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# Add project root and src directory to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / 'src'))
 
 from config import config
 from data.dataset import CTDataset3D
