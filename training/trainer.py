@@ -186,7 +186,8 @@ def load_and_prepare_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
 def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
                 optimizer: torch.optim.Optimizer, scaler: torch.cuda.amp.GradScaler,
                 device: torch.device, epoch: int, total_epochs: int,
-                gradient_accumulation_steps: int = 1, use_amp: bool = False) -> float:
+                gradient_accumulation_steps: int = 1, use_amp: bool = False,
+                use_bf16: bool = False) -> float:
     """Trains the model for one epoch.
 
     Handles forward pass, loss calculation, backward pass, optimizer step,
@@ -204,6 +205,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         total_epochs: The total number of epochs for training.
         gradient_accumulation_steps: Number of steps to accumulate gradients before an optimizer step.
         use_amp: Boolean indicating whether to use Automatic Mixed Precision.
+        use_bf16: Boolean indicating whether to use bfloat16 for mixed precision.
 
     Returns:
         The average training loss for the epoch.
@@ -219,8 +221,9 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         labels = batch["labels"].to(device, non_blocking=True)
 
         if use_amp and scaler is not None:
-            # Automatic Mixed Precision context.
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16 if hasattr(torch.cuda.amp, 'bfloat16') else torch.float16):
+            # Determine the dtype for mixed precision based on config and hardware support.
+            amp_dtype = torch.bfloat16 if use_bf16 and torch.cuda.is_bf16_supported() else torch.float16
+            with torch.cuda.amp.autocast(dtype=amp_dtype):
                 outputs = model(pixel_values)
                 loss = criterion(outputs, labels)
                 # Normalize loss for gradient accumulation.
@@ -525,7 +528,7 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
         train_loss = train_epoch(
             model, train_loader, criterion, optimizer, scaler, device,
             epoch, config.NUM_EPOCHS, config.GRADIENT_ACCUMULATION_STEPS,
-            config.MIXED_PRECISION
+            config.MIXED_PRECISION, config.USE_BF16
         )
         # Validate for one epoch.
         valid_loss, predictions, labels = validate_epoch(

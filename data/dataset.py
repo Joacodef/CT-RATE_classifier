@@ -23,7 +23,8 @@ class CTDataset3D(Dataset):
                  pathology_columns: List[str], target_spacing_xyz: np.ndarray,
                  target_shape_dhw: Tuple[int, int, int], clip_hu_min: float, clip_hu_max: float,
                  use_cache: bool = True, cache_dir: Optional[Path] = None,
-                 augment: bool = False, orientation_axcodes: str = "LPS"):
+                 augment: bool = False, orientation_axcodes: str = "LPS",
+                 save_transformed_path: Optional[Path] = None): # Step 2.1: Add new argument
         """
         Initializes the CTDataset3D instance.
 
@@ -35,7 +36,7 @@ class CTDataset3D(Dataset):
             target_spacing_xyz: Numpy array specifying the desired voxel spacing (x, y, z)
                                 for resampling.
             target_shape_dhw: Tuple specifying the desired shape (depth, height, width)
-                              for the processed volumes.
+                                  for the processed volumes.
             clip_hu_min: Minimum Hounsfield Unit (HU) value for windowing.
             clip_hu_max: Maximum Hounsfield Unit (HU) value for windowing.
             use_cache: Boolean indicating whether to use caching for preprocessed samples.
@@ -46,6 +47,9 @@ class CTDataset3D(Dataset):
                      Defaults to False.
             orientation_axcodes: Target orientation for MONAI's Orientationd transform (e.g., "LPS", "RAS").
                                  Defaults to "LPS".
+            save_transformed_path (Optional[Path]): If provided, the directory path where
+                                                     the transformed images will be saved.
+                                                     Defaults to None.
         """
 
         self.dataframe = dataframe.reset_index(drop=True)
@@ -57,6 +61,7 @@ class CTDataset3D(Dataset):
         self.clip_hu_min = float(clip_hu_min)
         self.clip_hu_max = float(clip_hu_max)
         self.orientation_axcodes = orientation_axcodes
+        self.save_transformed_path = save_transformed_path # Store the new path
 
         self.use_cache = use_cache
         self.cache_dir = Path(cache_dir) if cache_dir else None
@@ -77,7 +82,8 @@ class CTDataset3D(Dataset):
             target_shape_dhw=self.target_shape_dhw,
             clip_hu_min=self.clip_hu_min,
             clip_hu_max=self.clip_hu_max,
-            orientation_axcodes=self.orientation_axcodes
+            orientation_axcodes=self.orientation_axcodes,
+            save_transformed_path=self.save_transformed_path # Step 2.2: Pass argument to pipeline creator
         )
 
         logger.info(f"Dataset initialized with {len(self.dataframe)} samples. Caching: {self.use_cache}, Augmentation: {self.augment}. MONAI pipeline created.")
@@ -104,23 +110,21 @@ class CTDataset3D(Dataset):
                 logger.debug(f"Loading sample {idx} from cache: {cache_path}")
                 return torch.load(cache_path, map_location='cpu')
             except Exception as e:
-                logger.warning(f"CACHE_LOAD_ERROR: Error loading sample {idx} from cache {cache_path}: {type(e).__name__} - {e}. Attempting to remove corrupted file.") 
-                # More explicit attempt to remove the corrupted cache file
-                if cache_path.exists(): # Re-check existence before unlinking
-                    logger.info(f"CACHE_DELETE_ATTEMPT: Corrupted file {cache_path} exists. Attempting unlink.") # ADDED
+                logger.warning(f"CACHE_LOAD_ERROR: Error loading sample {idx} from cache {cache_path}: {type(e).__name__} - {e}. Attempting to remove corrupted file.")
+                if cache_path.exists():
+                    logger.info(f"CACHE_DELETE_ATTEMPT: Corrupted file {cache_path} exists. Attempting unlink.")
                     try:
-                        cache_path.unlink() # Attempt to delete the file
-                        # After attempting unlink, immediately check existence again
-                        if not cache_path.exists(): # ADDED
-                            logger.info(f"CACHE_DELETE_SUCCESS: Successfully removed corrupted cache file: {cache_path}") # ADDED
+                        cache_path.unlink()
+                        if not cache_path.exists():
+                            logger.info(f"CACHE_DELETE_SUCCESS: Successfully removed corrupted cache file: {cache_path}")
                         else:
-                            logger.error(f"CACHE_DELETE_FAILURE_POST_UNLINK: File {cache_path} still exists immediately after unlink attempt.") # ADDED
+                            logger.error(f"CACHE_DELETE_FAILURE_POST_UNLINK: File {cache_path} still exists immediately after unlink attempt.")
                     except OSError as unlink_e:
-                        logger.error(f"CACHE_DELETE_OSERROR: Failed to remove corrupted cache file {cache_path} due to OSError: {type(unlink_e).__name__} - {unlink_e}") # ADDED
-                        if hasattr(unlink_e, 'winerror'): # ADDED
-                            logger.error(f"CACHE_DELETE_OSERROR_WINCODE: Windows error code: {unlink_e.winerror}") # ADDED
+                        logger.error(f"CACHE_DELETE_OSERROR: Failed to remove corrupted cache file {cache_path} due to OSError: {type(unlink_e).__name__} - {unlink_e}")
+                        if hasattr(unlink_e, 'winerror'):
+                            logger.error(f"CACHE_DELETE_OSERROR_WINCODE: Windows error code: {unlink_e.winerror}")
                 else:
-                    logger.info(f"CACHE_DELETE_SKIP: Corrupted cache file {cache_path} was already removed or did not exist before unlink attempt in except block.") # ADDED
+                    logger.info(f"CACHE_DELETE_SKIP: Corrupted cache file {cache_path} was already removed or did not exist before unlink attempt in except block.")
         return None
 
     def _save_to_cache(self, idx: int, sample: Dict[str, any]):
@@ -148,6 +152,8 @@ class CTDataset3D(Dataset):
         """
         Retrieves a sample from the dataset by index.
         """
+        # NOTE: When saving transformed files, caching should ideally be disabled
+        # to ensure the save operation is triggered for each item.
         cached_sample = self._load_from_cache(idx)
         if cached_sample is not None:
             if self.augment and 'pixel_values' in cached_sample:
@@ -165,6 +171,7 @@ class CTDataset3D(Dataset):
             logger.error(f"Volume not found: {img_path} for index {idx}. Returning zero tensor.")
             pixel_values = torch.zeros((1, *self.target_shape_dhw), dtype=torch.float32)
         else:
+            # The monai_preprocessing_pipeline now includes the saving transform if the path was provided
             pixel_values = preprocess_ct_volume_monai(
                 nii_path=img_path,
                 preprocessing_pipeline=self.monai_preprocessing_pipeline,

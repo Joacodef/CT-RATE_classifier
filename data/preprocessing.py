@@ -3,8 +3,9 @@
 import numpy as np
 import torch
 from pathlib import Path
-import logging # Standard library logging
-import gc # Garbage collection
+import logging
+import gc
+from typing import Optional
 
 # MONAI imports
 from monai.transforms import (
@@ -15,8 +16,8 @@ from monai.transforms import (
     Spacingd,
     ScaleIntensityRanged,
     Resized,
-    EnsureTyped
-    # CropForegroundd was commented out, keeping it that way unless specified
+    EnsureTyped,
+    SaveImaged
 )
 from monai.data import MetaTensor
 
@@ -27,7 +28,8 @@ def create_monai_preprocessing_pipeline(
     target_shape_dhw: tuple,
     clip_hu_min: float,
     clip_hu_max: float,
-    orientation_axcodes: str = "LPS"
+    orientation_axcodes: str = "LPS",
+    save_transformed_path: Optional[Path] = None
 ) -> Compose:
     """
     Creates a MONAI preprocessing pipeline.
@@ -38,6 +40,9 @@ def create_monai_preprocessing_pipeline(
         clip_hu_min: Minimum Hounsfield Unit (HU) value for clipping.
         clip_hu_max: Maximum Hounsfield Unit (HU) value for clipping.
         orientation_axcodes: Target orientation for the image data (e.g., "LPS", "RAS").
+        save_transformed_path (Optional[Path]): If provided, the directory path where
+                                                 the transformed images will be saved.
+                                                 Defaults to None.
 
     Returns:
         monai.transforms.Compose: The MONAI preprocessing pipeline.
@@ -53,7 +58,7 @@ def create_monai_preprocessing_pipeline(
             keys="image",
             pixdim=pixdim,
             mode="bilinear",
-            align_corners=True # align_corners is generally fine with bilinear/trilinear for Spacingd
+            align_corners=True
         ),
         ScaleIntensityRanged(
             keys="image",
@@ -63,15 +68,30 @@ def create_monai_preprocessing_pipeline(
             b_max=1.0,
             clip=True
         ),
-        # CropForegroundd(keys="image", source_key="image", k_divisible=tuple(int(s/4) for s in spatial_size)),
         Resized(
             keys="image",
             spatial_size=spatial_size,
             mode="area"
-            # align_corners=True, # REMOVED: Incompatible with mode="area"
         ),
         EnsureTyped(keys="image", dtype=torch.float32, track_meta=False)
     ]
+    
+    # Conditionally add the SaveImaged transform if a path is provided.
+    if save_transformed_path:
+        # Ensure the output directory exists
+        save_transformed_path.mkdir(parents=True, exist_ok=True)
+        # Insert before the final EnsureTyped so that metadata is still available.
+        transforms.insert(-1, 
+            SaveImaged(
+                keys="image",
+                output_dir=save_transformed_path,
+                output_postfix="_transformed",
+                resample=False, # The image is already in the target spacing.
+                separate_folder=False, # Save files directly in output_dir.
+                print_log=True # Log each save operation to the console.
+            )
+        )
+
     return Compose(transforms)
 
 def preprocess_ct_volume_monai(
@@ -79,6 +99,17 @@ def preprocess_ct_volume_monai(
     preprocessing_pipeline: Compose,
     target_shape_dhw: tuple
 ) -> torch.Tensor:
+    """
+    Applies a MONAI transformation pipeline to a single NIfTI file.
+
+    Args:
+        nii_path (Path): The file path to the NIfTI volume.
+        preprocessing_pipeline (Compose): The MONAI Compose object containing the transformations.
+        target_shape_dhw (tuple): The target shape used for creating a zero tensor on error.
+
+    Returns:
+        torch.Tensor: The preprocessed volume as a PyTorch tensor.
+    """
     data_dict = {"image": str(nii_path)}
     try:
         processed_data_dict = preprocessing_pipeline(data_dict)
@@ -94,14 +125,9 @@ def preprocess_ct_volume_monai(
             if processed_tensor.shape[0] > 1:
                 processed_tensor = processed_tensor[0, ...].unsqueeze(0)
         
-        # This check is important for verifying the pipeline's final output shape.
-        # If an error occurs in the pipeline, the except block below handles returning a zero tensor.
-        # This block handles cases where the pipeline runs without crashing but produces an unexpected shape.
         if processed_tensor.shape[1:] != target_shape_dhw or processed_tensor.shape[0] !=1:
-            logger.error(f"Shape mismatch after MONAI processing: actual {processed_tensor.shape} vs expected (1, {target_shape_dhw}). Path: {nii_path}. This might occur if an error was suppressed or if pipeline logic is flawed.")
-            # Fallback to zero tensor if shape is incorrect, even if no direct crash in pipeline.
-            # This indicates a logic error or unexpected behavior in the transforms.
-            return torch.zeros((1, *target_shape_dhw), dtype=torch.float32) # Ensure zero tensor is returned
+            logger.error(f"Shape mismatch after MONAI processing: actual {processed_tensor.shape} vs expected (1, {target_shape_dhw}). Path: {nii_path}.")
+            return torch.zeros((1, *target_shape_dhw), dtype=torch.float32)
 
         gc.collect()
         return processed_tensor
