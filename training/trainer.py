@@ -261,9 +261,10 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
                 # Normalize loss for gradient accumulation.
                 loss = loss / gradient_accumulation_steps
         else:
-            # Standard precision forward pass.
-            outputs = model(pixel_values)
-            loss = criterion(outputs, labels)
+            # Enables automatic mixed-precision for forward pass.
+            with torch.cuda.amp.autocast():
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
             # Normalize loss for gradient accumulation.
             loss = loss / gradient_accumulation_steps
 
