@@ -5,6 +5,13 @@ __pycache__
 *.nii.gz
 *.ipynb
 *.wandb
+
 wandb/
+
 config/config.py
-data
+data/generated_subsets
+data/manual_labels
+data/metadata
+data/multi_abnormality_labels
+data/notebooks
+data/radiology_text_reports
