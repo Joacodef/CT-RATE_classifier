@@ -5,9 +5,14 @@ import numpy as np
 from dotenv import load_dotenv
 import os
 
+dotenv_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=dotenv_path)
+
 class Config:
-    load_dotenv( Path(__file__).parent.parent/".env" )  # Load environment variables from .env file
-    # Data paths
+    """
+    Configuration class for the CT 3D Classifier project.
+    Manages all settings, paths, and hyperparameters for the application.
+    """
     TRAIN_IMG_DIR = Path(os.getenv("CT_FULL_TRAIN_DIR"))
     VALID_IMG_DIR = Path(os.getenv("CT_FULL_VALID_DIR"))
     BASE_PROJECT_DIR = Path(os.getenv("BASE_PROJECT_DIR"))
@@ -18,7 +23,7 @@ class Config:
 
     # Model configuration
     MODEL_TYPE = "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d"
-    MODEL_VARIANT = "tiny"      # Options depend on MODEL_TYPE:
+    MODEL_VARIANT = "base"      # Options depend on MODEL_TYPE:
                                 # - resnet3d: "18", "34"
                                 # - densenet3d: "121", "169", "201", "161", "small", "tiny"
                                 # - vit3d: "tiny", "small", "base", "large"
