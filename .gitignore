@@ -15,3 +15,5 @@ data/metadata
 data/multi_abnormality_labels
 data/notebooks
 data/radiology_text_reports
+
+*.ipynb_checkpoints
