@@ -25,7 +25,7 @@ def get_dynamic_image_path(base_img_dir: Path, volume_filename_gz: str) -> Path:
     filename_stem = Path(volume_filename_gz).name
 
     # Construct the full path by joining the base directory and the processed filename.
-    return base_dir / f"{filename_stem}.nii.gz"
+    return base_img_dir / f"{filename_stem}.nii.gz"
 
 
 
