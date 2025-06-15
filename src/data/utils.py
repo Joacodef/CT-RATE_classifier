@@ -23,6 +23,7 @@ def get_dynamic_image_path(base_img_dir: Path, volume_filename_gz: str) -> Path:
     # Extract the final component (basename) from the volume_name string.
     # This makes the function robust to volume names that contain path separators.
     filename_stem = Path(volume_filename_gz).name
+    filename_stem = filename_stem.replace(".nii.gz", "__transformed.nii.gz") 
 
     # Construct the full path by joining the base directory and the processed filename.
     return base_img_dir / f"{filename_stem}"
