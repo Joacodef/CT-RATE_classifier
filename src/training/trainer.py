@@ -372,7 +372,8 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
         # Initialize Weights & Biases run.
         wandb_run = wandb.init(
             project="ct_classifier", # Project name in wandb.
-            config=wandb_config_payload # Pass configuration to wandb.
+            config=wandb_config_payload, # Pass configuration to wandb.
+            dir=str(config.OUTPUT_DIR) # Specify directory for wandb files.
         )
         logger.info(f"Weights & Biases initialized successfully. Run name: {wandb_run.name}")
 
