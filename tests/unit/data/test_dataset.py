@@ -185,7 +185,7 @@ class TestCTDataset3D:
     # Patch the path to preprocess_ct_volume_monai if it's called inside CTDataset3D
     # The relevant path for patching depends on how it's imported in data/dataset.py
     # Assuming 'from .preprocessing import preprocess_ct_volume_monai'
-    @patch('data.dataset.preprocess_ct_volume_monai')
+    @patch('src.data.dataset.preprocess_ct_volume_monai')
     def test_cache_save_and_load(self, mock_preprocess_monai, mock_dataframe, default_dataset_params, temp_cache_dir):
         """Test that caching saves and loads MONAI-processed data correctly."""
         params = default_dataset_params.copy()
@@ -247,7 +247,7 @@ class TestCTDataset3D:
         expected_reprocessed_tensor = torch.rand(1, *params["target_shape_dhw"])
 
         # Patch preprocess_ct_volume_monai to monitor its calls and return a known tensor
-        with patch('data.dataset.preprocess_ct_volume_monai') as mock_re_preprocess:
+        with patch('src.data.dataset.preprocess_ct_volume_monai') as mock_re_preprocess:
             mock_re_preprocess.return_value = expected_reprocessed_tensor
 
             # Accessing the item should trigger cache load error, reprocessing, and re-caching
@@ -315,7 +315,7 @@ class TestCTDataset3D:
         # For now, just check it didn't error out and shape/range are maintained
         # If specific augmentations are guaranteed, check for their effects.
 
-    @patch('data.dataset.preprocess_ct_volume_monai')
+    @patch('src.data.dataset.preprocess_ct_volume_monai')
     def test_augmentation_with_cache(self, mock_preprocess_monai, mock_dataframe, default_dataset_params, temp_cache_dir):
         """Test that augmentation is applied after loading from cache if augment=True."""
         params = default_dataset_params.copy()
@@ -366,7 +366,7 @@ class TestCTDataset3D:
         params_to_check["orientation_axcodes"] = "RAS"
 
         # Patch 'create_monai_preprocessing_pipeline' where it's imported by 'data.dataset'
-        with patch('data.dataset.create_monai_preprocessing_pipeline', return_value=Mock(spec=MonaiCompose)) as mock_create_pipeline:
+        with patch('src.data.dataset.create_monai_preprocessing_pipeline', return_value=Mock(spec=MonaiCompose)) as mock_create_pipeline:
             _ = CTDataset3D(dataframe=mock_dataframe, **params_to_check) # Initialize dataset
             
             mock_create_pipeline.assert_called_once()
