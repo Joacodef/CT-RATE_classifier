@@ -112,30 +112,27 @@ class TestGetDynamicImagePath:
 
     def test_filename_with_nii_extension_only(self):
         """
-        Test with a filename having only .nii extension.
-        The function's logic results in the .nii part becoming part of an intermediate directory name,
-        and the final filename will have .nii.nii.gz.
-        Example: IMG_001_FLAIR.nii -> base_dir/IMG_001/IMG_001_FLAIR.nii/IMG_001_FLAIR.nii.nii.gz
+        Test with a filename having only a .nii extension.
+        The function should correctly replace it with .nii.gz and build the
+        hierarchical path based on the corrected file stem.
+        Example: IMG_001_FLAIR.nii -> base_dir/IMG_001/IMG_001_FLAIR/IMG_001_FLAIR.nii.gz
         """
         base_dir = Path("/data/testing")
         volume_filename_input = "IMG_001_FLAIR.nii"
 
-        # Trace the function's logic to determine the expected path:
-        # 1. volume_filename_gz (final filename part) becomes "IMG_001_FLAIR.nii.nii.gz"
-        final_filename_component = "IMG_001_FLAIR.nii.nii.gz"
+        # The function should create a path based on the corrected filename stem.
+        # Input: IMG_001_FLAIR.nii
+        # 1. Filename becomes IMG_001_FLAIR.nii.gz
+        # 2. Stem for path parts becomes IMG_001_FLAIR
+        # 3. Path is base_dir/IMG_001/IMG_001_FLAIR/IMG_001_FLAIR.nii.gz
+        expected_path = base_dir / "IMG_001" / "IMG_001_FLAIR" / "IMG_001_FLAIR.nii.gz"
 
-        # 2. name_without_ext for directory parts becomes "IMG_001_FLAIR.nii"
-        # 3. parts = ["IMG", "001", "FLAIR.nii"]
-        # 4. Intermediate directory parts from these:
-        intermediate_dir1 = "IMG_001" # parts[0]_parts[1]
-        intermediate_dir2 = "IMG_001_FLAIR.nii" # parts[0]_parts[1]_parts[2]
+        # Explicitly test the 'nested' mode, which is the default.
+        result_path = get_dynamic_image_path(base_dir, volume_filename_input, mode='nested')
 
-        expected_path = base_dir / intermediate_dir1 / intermediate_dir2 / final_filename_component
-
-        result_path = get_dynamic_image_path(base_dir, volume_filename_input)
         assert result_path == expected_path, \
-               f"Result path: {result_path}, Expected: {expected_path}. " \
-               "The test expectation should match the function's behavior where '.nii' can be part of a directory name."
+            (f"Result path: {result_path}, Expected: {expected_path}. "
+                "The function should correctly handle the .nii extension.")
 
 
     def test_base_dir_with_trailing_slash(self):
