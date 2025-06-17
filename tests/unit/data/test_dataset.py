@@ -12,29 +12,24 @@ Tests cover:
 import os
 import sys
 from pathlib import Path
+import tempfile
+import shutil
+from unittest.mock import Mock, patch, MagicMock, call
 
-# Set up the import path before any other imports
-current_file = Path(__file__).resolve()
-project_root = current_file.parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / 'src'))
-
-# Now import standard libraries
 import pytest
 import numpy as np
 import pandas as pd
 import torch
-import nibabel as nib # For creating mock NIfTI files
-import tempfile
-import shutil
-from unittest.mock import Mock, patch, MagicMock, call # Added call for more specific mock assertions
+import nibabel as nib
+
+# Add the project root to the Python path
+project_root = Path(__file__).resolve().parents[3]
+sys.path.append(str(project_root))
 
 # Import project modules
-from data.dataset import CTDataset3D
-# No longer directly import preprocess_ct_volume here, it's encapsulated.
-# We might import create_monai_preprocessing_pipeline if we want to inspect its calls.
-from data.preprocessing import create_monai_preprocessing_pipeline
-from data.utils import get_dynamic_image_path
+from src.data.dataset import CTDataset3D
+from src.data.preprocessing import create_monai_preprocessing_pipeline
+from src.data.utils import get_dynamic_image_path
 from monai.transforms import Compose as MonaiCompose # For type checking
 
 # === Module-level fixtures ===
