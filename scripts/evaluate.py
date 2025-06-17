@@ -31,28 +31,24 @@ import logging
 
 # Add project root to path
 # Add project root and src directory to Python path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / 'src'))
+project_root = Path(__file__).resolve().parents[1]
+sys.path.append(str(project_root))
 
-from config import Config
-from training.trainer import create_model
-from models.resnet3d import resnet18_3d, resnet34_3d
-from data.dataset import CTDataset3D
-from data.utils import get_dynamic_image_path
-from training.metrics import compute_metrics
-from utils.logging_config import setup_logging
-
+from src.config import load_config
+from src.training.trainer import create_model
+from src.data.dataset import CTDataset3D
+from src.training.metrics import compute_metrics
+from src.utils.logging_config import setup_logging
 
 class ModelEvaluator:
     """Comprehensive model evaluation class"""
     
-    def __init__(self, config: Config, model_path: str, device: str = 'auto'):
+    def __init__(self, config, model_path, device: str = 'auto'):
         self.config = config # Store config instance
         self.model_path = Path(model_path)
         self.device = self._setup_device(device)
         self.logger = logging.getLogger(__name__) # Use standard logger
-        
+
         # Load model
         self.model = self._load_model()
         
@@ -71,14 +67,14 @@ class ModelEvaluator:
             self.logger.error(f"Model file not found: {self.model_path}") # Log error
             raise FileNotFoundError(f"Model file not found: {self.model_path}")
         
-        # Create model architecture using the centralized create_model function
-        self.logger.info(f"Creating model architecture: {self.config.MODEL_TYPE} (variant: {getattr(self.config, 'MODEL_VARIANT', 'default')}) using create_model.")
+         # Create model architecture using the centralized create_model function
+        self.logger.info(f"Creating model architecture: {self.config.model.type} (variant: {self.config.model.variant}) using create_model.")
         # Ensure gradient checkpointing is disabled for evaluation/inference
-        original_gradient_checkpointing_setting = self.config.GRADIENT_CHECKPOINTING
-        self.config.GRADIENT_CHECKPOINTING = False
+        original_gradient_checkpointing_setting = self.config.optimization.gradient_checkpointing
+        self.config.optimization.gradient_checkpointing = False
         model = create_model(self.config)
-        self.config.GRADIENT_CHECKPOINTING = original_gradient_checkpointing_setting # Restore original setting
-        self.logger.info(f"Model created for {self.config.NUM_PATHOLOGIES} classes.")
+        self.config.optimization.gradient_checkpointing = original_gradient_checkpointing_setting # Restore original setting
+        self.logger.info(f"Model created for {self.config.pathologies.num_pathologies} classes.")
         
         # Load weights
         self.logger.info(f"Loading model weights from: {self.model_path}") # Log path
@@ -104,13 +100,13 @@ class ModelEvaluator:
         """Prepare dataset for evaluation"""
         self.logger.info(f"Preparing dataset for '{dataset_type}' evaluation.") # Log dataset type
         if dataset_type == 'validation':
-            volumes_csv = self.config.SELECTED_VALID_VOLUMES_CSV
-            labels_csv = self.config.VALID_LABELS_CSV
-            img_dir = self.config.VALID_IMG_DIR
+            volumes_csv = self.config.paths.data_subsets.selected_valid_volumes
+            labels_csv = self.config.paths.labels.valid
+            img_dir = self.config.paths.valid_img_dir
         elif dataset_type == 'train': # Added train dataset option
-            volumes_csv = self.config.SELECTED_TRAIN_VOLUMES_CSV
-            labels_csv = self.config.TRAIN_LABELS_CSV
-            img_dir = self.config.TRAIN_IMG_DIR
+            volumes_csv = self.config.paths.data_subsets.selected_train_volumes
+            labels_csv = self.config.paths.labels.train
+            img_dir = self.config.paths.train_img_dir
         else:
             self.logger.error(f"Unknown dataset type for evaluation: {dataset_type}") # Log error
             raise ValueError(f"Unknown dataset type: {dataset_type}")
@@ -123,7 +119,7 @@ class ModelEvaluator:
         
         eval_df = pd.merge(volumes_df, labels_df, on='VolumeName', how='inner')
         # Fill NaN and convert pathology columns to int
-        eval_df[self.config.PATHOLOGY_COLUMNS] = eval_df[self.config.PATHOLOGY_COLUMNS].fillna(0).astype(int)
+        eval_df[self.config.pathologies.columns] = eval_df[self.config.pathologies.columns].fillna(0).astype(int)
         
         self.logger.info(f"Loaded {len(eval_df)} samples for {dataset_type} evaluation.")
         return eval_df, img_dir
@@ -143,24 +139,24 @@ class ModelEvaluator:
         eval_dataset = CTDataset3D(
             dataframe=eval_df, # Pass dataframe
             img_dir=img_dir, 
-            pathology_columns=self.config.PATHOLOGY_COLUMNS,
-            target_spacing_xyz=self.config.TARGET_SPACING, 
-            target_shape_dhw=self.config.TARGET_SHAPE_DHW,
-            clip_hu_min=self.config.CLIP_HU_MIN, 
-            clip_hu_max=self.config.CLIP_HU_MAX,
-            use_cache=self.config.USE_CACHE, 
-            cache_dir=self.config.CACHE_DIR,
+            pathology_columns=self.config.pathologies.columns,
+            target_spacing_xyz=self.config.image_processing.target_spacing, 
+            target_shape_dhw=self.config.image_processing.target_shape_dhw,
+            clip_hu_min=self.config.image_processing.clip_hu_min, 
+            clip_hu_max=self.config.image_processing.clip_hu_max,
+            use_cache=self.config.cache.use_cache, 
+            cache_dir=self.config.paths.cache_dir,
             augment=False,  # No augmentation for evaluation
-            orientation_axcodes=self.config.ORIENTATION_AXCODES # Pass orientation config
+            orientation_axcodes=self.config.image_processing.orientation_axcodes
         )
         
         eval_loader = DataLoader(
             eval_dataset, 
-            batch_size=self.config.BATCH_SIZE, 
+            batch_size=self.config.training.batch_size, 
             shuffle=False, # No shuffle for evaluation
-            num_workers=self.config.NUM_WORKERS, 
-            pin_memory=self.config.PIN_MEMORY,
-            persistent_workers=self.config.NUM_WORKERS > 0 # Keep workers alive if num_workers > 0
+            num_workers=self.config.training.num_workers, 
+            pin_memory=self.config.training.pin_memory,
+            persistent_workers=self.config.training.num_workers > 0
         )
         
         # Collect predictions and labels
@@ -197,7 +193,7 @@ class ModelEvaluator:
         
         # Compute metrics using the dedicated metrics computation function
         self.logger.info("Computing metrics from predictions and labels.") # Log metrics computation
-        metrics = compute_metrics(predictions_np, labels_np, self.config.PATHOLOGY_COLUMNS) # Pass logits
+        metrics = compute_metrics(predictions_np, labels_np, self.config.pathologies.columns) # Pass logits
         
         # Prepare results dictionary
         results = {
@@ -208,7 +204,7 @@ class ModelEvaluator:
             'probabilities': probabilities_np, # Store probabilities
             'labels': labels_np, # Store true labels
             'volume_names': all_volume_names, # Store volume names
-            'pathology_columns': self.config.PATHOLOGY_COLUMNS # Store pathology names
+            'pathology_columns': self.config.pathologies.columns # Store pathology names
         }
         
         # Save predictions to a CSV file if requested
@@ -223,7 +219,7 @@ class ModelEvaluator:
     
     def _save_predictions(self, results: Dict, dataset_type: str):
         """Save predictions and probabilities to CSV file"""
-        output_dir = Path(self.config.OUTPUT_DIR) # Get output directory from config
+        output_dir = self.config.paths.output_dir # Get output directory from config
         output_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
         
         # Prepare data for DataFrame
@@ -270,7 +266,7 @@ class ModelEvaluator:
         # Define save path for the report image
         if save_path is None:
             report_filename = f"evaluation_report_{results['dataset_type']}_{self.model_path.stem}.png" # Add model name
-            save_path = Path(self.config.OUTPUT_DIR) / report_filename
+            save_path = self.config.paths.output_dir / report_filename
         else:
             save_path = Path(save_path) # Ensure it's a Path object
         save_path.parent.mkdir(parents=True, exist_ok=True) # Ensure output directory exists
@@ -490,7 +486,7 @@ class ModelEvaluator:
             "=" * 35,
             f"Dataset: {results['dataset_type'].title()}",
             f"Samples: {results['num_samples']}",
-            f"Model Type: {self.config.MODEL_TYPE}",
+            f"Model Type: {self.config.model.type}",
             "",
             "Overall Metrics:",
             f"  ROC AUC (Macro): {results['metrics'].get('roc_auc_macro', 'N/A'):.4f}",
@@ -517,11 +513,11 @@ class ModelEvaluator:
     def compare_thresholds(self, results: Dict, pathology: str, save_path: Optional[str] = None):
         """Analyze performance at different thresholds for a specific pathology"""
         
-        if pathology not in self.config.PATHOLOGY_COLUMNS:
+        if pathology not in self.config.pathologies.columns:
             self.logger.error(f"Pathology '{pathology}' not found in configuration.") # Log error
             raise ValueError(f"Pathology '{pathology}' not found in configuration")
         
-        pathology_idx = self.config.PATHOLOGY_COLUMNS.index(pathology)
+        pathology_idx = self.config.pathologies.columns.index(pathology)
         y_true = results['labels'][:, pathology_idx]
         y_prob = results['probabilities'][:, pathology_idx]
         
@@ -582,7 +578,7 @@ class ModelEvaluator:
         # Define save path for the threshold analysis plot
         if save_path is None:
             plot_filename = f"threshold_analysis_{pathology.replace(' ', '_').lower()}_{self.model_path.stem}.png" # Add model name
-            save_path = Path(self.config.OUTPUT_DIR) / plot_filename
+            save_path = self.config.paths.output_dir / plot_filename
         save_path.parent.mkdir(parents=True, exist_ok=True) # Ensure directory exists
         
         try:
@@ -600,56 +596,77 @@ def main():
     """Main evaluation function"""
     parser = argparse.ArgumentParser(description='Evaluate CT 3D Classifier')
     
-    parser.add_argument('--model', type=str, required=True,
-                       help='Path to trained model checkpoint (.pth file)')
-    parser.add_argument('--dataset', type=str, default='validation',
-                       choices=['validation', 'train'], # Added 'train' option
-                       help='Dataset to evaluate on (default: validation)')
-    parser.add_argument('--output-dir', type=str, default=None,
-                       help='Output directory for results. If None, uses config.OUTPUT_DIR.')
-    parser.add_argument('--device', type=str, default='auto',
-                       choices=['auto', 'cuda', 'cpu'],
-                       help='Device to use for evaluation (default: auto)')
-    parser.add_argument('--no-save-predictions', action='store_true',
-                       help='If set, do not save detailed predictions to CSV file.')
-    parser.add_argument('--generate-report', action='store_true',
-                       help='If set, generate comprehensive visual evaluation report.')
-    parser.add_argument('--threshold-analysis', type=str, default=None,
-                       help='Name of a single pathology for threshold analysis plot generation.')
-    parser.add_argument('--config-override', type=str, default=None,
-                       help='Path to a JSON file to override specific config parameters.')
+    parser.add_argument(
+        '--config', 
+        type=str, 
+        required=True,
+        help='Path to the YAML configuration file.'
+    )
+    parser.add_argument(
+        '--model', 
+        type=str, 
+        required=True,
+        help='Path to trained model checkpoint (.pth file).'
+    )
+    parser.add_argument(
+        '--dataset', 
+        type=str, 
+        default='validation',
+        choices=['validation', 'train'],
+        help='Dataset to evaluate on (default: validation).'
+    )
+    parser.add_argument(
+        '--output-dir', 
+        type=str, 
+        default=None,
+        help='Override the output directory specified in the config file.'
+    )
+    parser.add_argument(
+        '--device', 
+        type=str, 
+        default='auto',
+        choices=['auto', 'cuda', 'cpu'],
+        help='Device to use for evaluation (default: auto).'
+    )
+    parser.add_argument(
+        '--no-save-predictions', 
+        action='store_true',
+        help='If set, do not save detailed predictions to a CSV file.'
+    )
+    parser.add_argument(
+        '--generate-report', 
+        action='store_true',
+        help='If set, generate a comprehensive visual evaluation report.'
+    )
+    parser.add_argument(
+        '--threshold-analysis', 
+        type=str, 
+        default=None,
+        help='Name of a single pathology for which to generate a threshold analysis plot.'
+    )
     
     args = parser.parse_args()
     
-    # Setup logging for the evaluation script
-    logger = setup_logging('evaluation.log') # Main logger for this script
+    # Load configuration from YAML file
+    config = load_config(args.config)
     
-    # Load configuration
-    config = Config()
-    
-    # Override output directory from CLI if specified
+    # Override the output directory if provided via command line
     if args.output_dir:
-        config.OUTPUT_DIR = Path(args.output_dir)
-        logger.info(f"Output directory overridden by CLI: {config.OUTPUT_DIR}")
+        config.paths.output_dir = Path(args.output_dir)
+        
+    # Setup logging to use the (potentially overridden) output directory
+    setup_logging(log_file_path=config.paths.output_dir / "evaluation.log")
+    logger = logging.getLogger(__name__)
     
-    # Override config parameters from JSON file if specified
-    if args.config_override:
-        override_path = Path(args.config_override)
-        if override_path.exists():
-            logger.info(f"Loading config overrides from: {override_path}")
-            try:
-                with open(override_path, 'r') as f:
-                    override_params = json.load(f)
-                for key, value in override_params.items():
-                    if hasattr(config, key.upper()): # Match to uppercase config attributes
-                        setattr(config, key.upper(), value)
-                        logger.info(f"Config override: {key.upper()} = {value}")
-                    else:
-                        logger.warning(f"Config override key '{key.upper()}' not found in Config class.")
-            except Exception as e:
-                logger.error(f"Error loading config override file {override_path}: {e}")
-        else:
-            logger.warning(f"Config override file not found: {override_path}")
+    if args.output_dir:
+        logger.info(f"Output directory overridden by CLI: {config.paths.output_dir}")
+
+    # Create ModelEvaluator instance
+    try:
+        evaluator = ModelEvaluator(config, args.model, device=args.device)
+    except Exception as e:
+        logger.critical(f"Failed to initialize ModelEvaluator: {e}", exc_info=True)
+        sys.exit(1)
     
     # Create ModelEvaluator instance
     try:

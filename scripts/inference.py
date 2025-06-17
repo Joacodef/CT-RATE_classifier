@@ -10,20 +10,19 @@ from pathlib import Path
 import torch
 import numpy as np
 import pandas as pd
+import logging
 
-# Add project root and src directory to Python path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / 'src'))
+# Add the project root to the Python path to allow imports from `src`
+project_root = Path(__file__).resolve().parents[1]
+sys.path.append(str(project_root))
 
-from config import Config
-from models.resnet3d import resnet18_3d # Assuming ResNet-18 is still the target for inference
-# Updated imports for MONAI preprocessing
-from data.preprocessing import (
+from src.config import load_config
+from src.training.trainer import create_model
+from src.data.preprocessing import (
     create_monai_preprocessing_pipeline,
     preprocess_ct_volume_monai
 )
-from utils.logging_config import setup_logging
+from src.utils.logging_config import setup_logging
 
 class CTInference:
     """Single volume inference class using MONAI for preprocessing."""
@@ -45,10 +44,10 @@ class CTInference:
 
         # Initialize the MONAI preprocessing pipeline
         self.monai_pipeline = create_monai_preprocessing_pipeline(
-            target_spacing_xyz=self.config.TARGET_SPACING,
-            target_shape_dhw=self.config.TARGET_SHAPE_DHW,
-            clip_hu_min=self.config.CLIP_HU_MIN,
-            clip_hu_max=self.config.CLIP_HU_MAX,
+            target_spacing_xyz=self.config.image_processing.target_spacing,
+            target_shape_dhw=self.config.image_processing.target_shape_dhw,
+            clip_hu_min=self.config.image_processing.clip_hu_min,
+            clip_hu_max=self.config.image_processing.clip_hu_max,
             orientation_axcodes=orientation_axcodes
         )
         self.logger.info(f"CTInference initialized with MONAI pipeline. Orientation: {orientation_axcodes}")
@@ -65,11 +64,14 @@ class CTInference:
 
     def _load_model(self, model_path: str) -> torch.nn.Module:
         """Loads the trained model from a checkpoint."""
-        # Create model architecture.
-        # For now, this still specifically loads resnet18_3d.
-        # Future improvement: Load model based on config.MODEL_TYPE.
-        model = resnet18_3d(num_classes=self.config.NUM_PATHOLOGIES, use_checkpointing=False)
-        self.logger.info(f"Loading ResNet-18 3D model for inference.")
+        # Create model architecture using the centralized factory function
+        self.logger.info(
+            f"Creating model architecture: {self.config.model.type} "
+            f"(variant: {self.config.model.variant}) for inference."
+        )
+        # Ensure gradient checkpointing is disabled for inference
+        self.config.optimization.gradient_checkpointing = False
+        model = create_model(self.config)
 
         try:
             checkpoint = torch.load(model_path, map_location=self.device)
@@ -115,7 +117,7 @@ class CTInference:
         tensor = preprocess_ct_volume_monai(
             nii_path=volume_path,
             preprocessing_pipeline=self.monai_pipeline,
-            target_shape_dhw=self.config.TARGET_SHAPE_DHW # For error fallback
+            target_shape_dhw=self.config.image_processing.target_shape_dhw # For error fallback
         )
 
         # Add batch dimension if not already [1, C, D, H, W]
@@ -145,7 +147,7 @@ class CTInference:
             'predictions': {}
         }
 
-        for i, pathology in enumerate(self.config.PATHOLOGY_COLUMNS):
+        for i, pathology in enumerate(self.config.pathologies.columns):
             prob = float(probabilities[i])
             # Prediction based on a 0.5 threshold, could be made configurable
             prediction = int(prob > 0.5)
@@ -183,7 +185,7 @@ class CTInference:
                 self.logger.error(f"Error processing {volume_path_str}: {e}")
                 # Add row with NaN values for errored files
                 error_row = {'volume_path': str(volume_path_str)}
-                for pathology in self.config.PATHOLOGY_COLUMNS:
+                for pathology in self.config.pathologies.columns:
                     error_row[f'{pathology}_probability'] = np.nan
                     error_row[f'{pathology}_prediction'] = np.nan
                     error_row[f'{pathology}_confidence'] = np.nan
@@ -202,28 +204,59 @@ class CTInference:
 
 def main():
     parser = argparse.ArgumentParser(description='Run inference on CT volumes')
-    parser.add_argument('--model', type=str, required=True,
-                       help='Path to trained model checkpoint')
-    parser.add_argument('--input', type=str, required=True,
-                       help='Path to CT volume or directory containing volumes (.nii.gz)')
-    parser.add_argument('--output', type=str, default='inference_results.csv',
-                       help='Output CSV file for batch processing, or base name for single JSON.')
-    parser.add_argument('--device', type=str, default='auto',
-                       choices=['auto', 'cuda', 'cpu'])
-    # Threshold argument is not directly used in predict_volume's core logic for raw probabilities,
-    # but prediction (0/1) is derived using 0.5. This could be passed to CTInference if desired.
-    # parser.add_argument('--threshold', type=float, default=0.5,
-    #                    help='Prediction threshold')
-    parser.add_argument('--orientation', type=str, default="LPS",
-                        help="Target orientation for MONAI preprocessing (e.g., LPS, RAS).")
-
+    parser.add_argument(
+        '--config',
+        type=str,
+        required=True,
+        help='Path to the YAML configuration file used during model training.'
+    )
+    parser.add_argument(
+        '--model',
+        type=str,
+        required=True,
+        help='Path to trained model checkpoint (.pth file).'
+    )
+    parser.add_argument(
+        '--input',
+        type=str,
+        required=True,
+        help='Path to a single CT volume or a directory containing volumes (.nii.gz).'
+    )
+    parser.add_argument(
+        '--output',
+        type=str,
+        default='inference_results',
+        help='Base name for the output file(s) (e.g., .csv for batch, .json for single).'
+    )
+    parser.add_argument(
+        '--device',
+        type=str,
+        default='auto',
+        choices=['auto', 'cuda', 'cpu']
+    )
+    parser.add_argument(
+        '--orientation',
+        type=str,
+        default="LPS",
+        help="Target orientation for MONAI preprocessing (e.g., LPS, RAS)."
+    )
 
     args = parser.parse_args()
-    logger = setup_logging(log_file='inference_main.log') # Setup logger for main function as well
+    
+    # Setup main logger
+    setup_logging(log_file_path='inference_main.log')
+    logger = logging.getLogger(__name__)
 
-    config = Config()
-    # Pass orientation from CLI args to CTInference
-    inference = CTInference(args.model, config, args.device, orientation_axcodes=args.orientation)
+    # Load configuration from the specified YAML file
+    config = load_config(args.config)
+    
+    # Initialize the inference engine
+    inference = CTInference(
+        model_path=args.model,
+        config=config,
+        device=args.device,
+        orientation_axcodes=args.orientation
+    )
 
     input_path = Path(args.input)
 

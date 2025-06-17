@@ -1,0 +1,101 @@
+# ============================================================================
+# Main Configuration for CT 3D Classifier
+# ============================================================================
+# This YAML file defines all hyperparameters, paths, and settings for the project.
+# The Python configuration loader (in src/config/) will be responsible for
+# parsing this file and resolving paths.
+
+# --- Path Configuration ---
+# Paths that are dependent on environment variables should be defined here
+# as placeholders or keys. The loader script will substitute them.
+# Other paths can be defined relative to the BASE_PROJECT_DIR.
+paths:
+  # These top-level paths should correspond to your .env file
+  train_img_dir: ${TRAIN_IMG_DIR}
+  valid_img_dir: ${VALID_IMG_DIR}
+  base_project_dir: ${BASE_PROJECT_DIR}
+  cache_dir: ${CACHE_DIR}
+
+  # These paths are relative to the base_project_dir
+  data_subsets:
+    selected_train_volumes: "generated_subsets/selected_train_volumes.csv"
+    selected_valid_volumes: "generated_subsets/selected_valid_volumes.csv"
+  labels:
+    train: "dataset/multi_abnormality_labels/train_predicted_labels.csv"
+    valid: "dataset/multi_abnormality_labels/valid_predicted_labels.csv"
+
+  output_dir: "ct_3d_classifier_output"
+
+# --- Model Configuration ---
+model:
+  type: "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d"
+  variant: "base"      # Options depend on model type (e.g., "18", "121", "base")
+
+  # Vision Transformer specific settings (only used if model.type == "vit3d")
+  vit_specific:
+    patch_size: [16, 16, 16] # (Depth, Height, Width)
+    embed_dim: 384
+    depth: 12
+    num_heads: 6
+
+# --- Loss Function Configuration ---
+loss_function:
+  type: "FocalLoss"  # Options: "BCEWithLogitsLoss", "FocalLoss"
+  # Parameters for FocalLoss
+  focal_loss:
+    alpha: 1.0
+    gamma: 2.0
+
+# --- Training Parameters ---
+training:
+  num_epochs: 30
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  num_workers: 8
+  pin_memory: true
+  early_stopping_patience: 5
+  resume_from_checkpoint: null # Set to a path like 'path/to/checkpoint.pth' to resume
+
+# --- Training Optimizations ---
+optimization:
+  gradient_checkpointing: true
+  mixed_precision: true
+  use_bf16: true
+
+# --- Image Processing Parameters ---
+image_processing:
+  target_spacing: [1.0, 1.0, 1.0]  # In mm (X, Y, Z)
+  target_shape_dhw: [96, 224, 224] # (Depth, Height, Width)
+  clip_hu_min: -1000
+  clip_hu_max: 1000
+  orientation_axcodes: "LPS"      # e.g., "LPS", "RAS"
+
+# --- Cache Configuration ---
+cache:
+  use_cache: true
+
+# --- Pathology Labels ---
+# The list of all pathology classes the model will predict.
+# The order is important and must be consistent.
+pathologies:
+  columns:
+    - "Medical material"
+    - "Arterial wall calcification"
+    - "Cardiomegaly"
+    - "Pericardial effusion"
+    - "Coronary artery wall calcification"
+    - "Hiatal hernia"
+    - "Lymphadenopathy"
+    - "Emphysema"
+    - "Atelectasis"
+    - "Lung nodule"
+    - "Lung opacity"
+    - "Pulmonary fibrotic sequela"
+    - "Pleural effusion"
+    - "Mosaic attenuation pattern"
+    - "Peribronchial thickening"
+    - "Consolidation"
+    - "Bronchiectasis"
+    - "Interlobular septal thickening"

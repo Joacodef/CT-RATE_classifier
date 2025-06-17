@@ -8,7 +8,6 @@ __pycache__
 
 wandb/
 
-config/config.py
 data/generated_subsets
 data/manual_labels
 data/metadata

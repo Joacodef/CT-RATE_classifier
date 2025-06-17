@@ -5,27 +5,30 @@ Compare multiple trained models on the same dataset
 
 import sys
 import argparse
-import json
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
 
-# Add project root and src directory to Python path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / 'src'))
+# Add the project root to the Python path to allow imports from `src`
+project_root = Path(__file__).resolve().parents[1]
+sys.path.append(str(project_root))
+
+from src.config import load_config
+from src.evaluation.evaluator import ModelEvaluator
+from src.utils.logging_config import setup_logging
 
 
 from scripts.evaluate import ModelEvaluator
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 from config import Config
 from utils.logging_config import setup_logging
 
-def compare_models(model_paths: list, model_names: list, config: Config, dataset_type: str = 'validation'):
+def compare_models(model_paths: list, model_names: list, config, dataset_type: str = 'validation'):
     """Compare multiple models on the same dataset"""
     
-    logger = setup_logging('model_comparison.log')
+    logger = setup_logging(log_file_path=config.paths.output_dir / "model_comparison.log")
     results = {}
     
     # Evaluate each model
@@ -49,7 +52,7 @@ def compare_models(model_paths: list, model_names: list, config: Config, dataset
     comparison_df = pd.DataFrame(comparison_data)
     
     # Save comparison results
-    output_path = Path(config.OUTPUT_DIR) / 'model_comparison.csv'
+    output_path = config.paths.output_dir / 'model_comparison.csv'
     comparison_df.to_csv(output_path, index=False)
     logger.info(f"Model comparison saved to: {output_path}")
     
@@ -79,7 +82,7 @@ def compare_models(model_paths: list, model_names: list, config: Config, dataset
     pathology_data = []
     for model_name in model_names:
         row = []
-        for pathology in config.PATHOLOGY_COLUMNS:
+        for pathology in config.pathologies.columns:
             auc_key = f"{pathology}_auc"
             row.append(results[model_name].get(auc_key, 0.0))
         pathology_data.append(row)
@@ -87,9 +90,9 @@ def compare_models(model_paths: list, model_names: list, config: Config, dataset
     pathology_data = np.array(pathology_data)
     im = ax.imshow(pathology_data, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
     
-    ax.set_xticks(range(len(config.PATHOLOGY_COLUMNS)))
+    ax.set_xticks(range(len(config.pathologies.columns)))
     ax.set_yticks(range(len(model_names)))
-    ax.set_xticklabels([p[:15] + '...' if len(p) > 15 else p for p in config.PATHOLOGY_COLUMNS], 
+    ax.set_xticklabels([p[:15] + '...' if len(p) > 15 else p for p in config.pathologies.columns], 
                       rotation=45, ha='right')
     ax.set_yticklabels(model_names)
     ax.set_title('Per-Pathology AUC Scores')
@@ -104,7 +107,7 @@ def compare_models(model_paths: list, model_names: list, config: Config, dataset
         differences = []
         pathology_names = []
         
-        for pathology in config.PATHOLOGY_COLUMNS:
+        for pathology in config.pathologies.columns:
             auc_key = f"{pathology}_auc"
             if auc_key in results[model1] and auc_key in results[model2]:
                 diff = results[model2][auc_key] - results[model1][auc_key]
@@ -143,7 +146,7 @@ def compare_models(model_paths: list, model_names: list, config: Config, dataset
     plt.tight_layout()
     
     # Save comparison plot
-    plot_path = Path(config.OUTPUT_DIR) / 'model_comparison_report.png'
+    plot_path = config.paths.output_dir / 'model_comparison_report.png'
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     logger.info(f"Comparison plot saved to: {plot_path}")
     plt.close()
@@ -152,25 +155,40 @@ def compare_models(model_paths: list, model_names: list, config: Config, dataset
 
 def main():
     parser = argparse.ArgumentParser(description='Compare multiple trained models')
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to the base YAML configuration file.",
+    )
     parser.add_argument('--models', nargs='+', required=True,
-                       help='Paths to model checkpoints')
+                       help='Paths to model checkpoints to compare.')
     parser.add_argument('--names', nargs='+', required=True,
-                       help='Names for the models')
+                       help='Names for the models, one for each path.')
     parser.add_argument('--dataset', type=str, default='validation',
-                       choices=['validation', 'train'])
-    parser.add_argument('--output-dir', type=str, default=None)
+                       choices=['validation', 'train'],
+                       help="Dataset split to use for comparison.")
+    parser.add_argument('--output-dir', type=str, default=None,
+                       help="Override the output directory from the config file.")
     
     args = parser.parse_args()
     
     if len(args.models) != len(args.names):
-        raise ValueError("Number of models and names must match")
+        raise ValueError("The number of model paths and model names must be equal.")
     
-    config = Config()
+    # Load the base configuration from the YAML file
+    config = load_config(args.config)
+    
+    # Override the output directory if specified on the command line
     if args.output_dir:
-        config.OUTPUT_DIR = Path(args.output_dir)
+        config.paths.output_dir = Path(args.output_dir)
     
+    # Run the comparison
     comparison_df = compare_models(args.models, args.names, config, args.dataset)
-    print(comparison_df)
+    
+    # Print the results to the console
+    print("\n--- Model Comparison Results ---")
+    print(comparison_df.to_string())
 
 if __name__ == "__main__":
     main()

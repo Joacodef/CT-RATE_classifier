@@ -15,8 +15,8 @@ sys.path.insert(0, str(project_root))
 
 # --- Mocking os.getenv ---
 MOCK_ENV_VARS = {
-    "CT_FULL_TRAIN_DIR": "/dummy/train_dir",
-    "CT_FULL_VALID_DIR": "/dummy/valid_dir",
+    "TRAIN_IMG_DIR": "/dummy/train_dir",
+    "VALID_IMG_DIR": "/dummy/valid_dir",
     "BASE_PROJECT_DIR": "/dummy/project_dir",
     "CACHE_DIR": "/dummy/cache_dir"
 }

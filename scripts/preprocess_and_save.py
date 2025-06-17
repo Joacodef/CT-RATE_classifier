@@ -29,13 +29,12 @@ from tqdm import tqdm
 
 # Add the project root to the Python path to allow for absolute imports from
 # other modules like 'config' and 'data'.
-# Add project root and src directory to Python path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / 'src'))
+# Add the project root to the Python path to allow for absolute imports
+project_root = Path(__file__).resolve().parents[1]
+sys.path.append(str(project_root))
 
-from config import config
-from data.dataset import CTDataset3D
+from src.config import load_config
+from src.data.dataset import CTDataset3D
 
 def main():
     """
@@ -46,6 +45,12 @@ def main():
     """
     parser = argparse.ArgumentParser(
         description="Preprocess CT scan data and save transformed volumes to disk."
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        required=True,
+        help='Path to the YAML configuration file defining the preprocessing parameters.'
     )
     parser.add_argument(
         '--dataframe_path',
@@ -68,8 +73,10 @@ def main():
     parser.add_argument("--input_path_mode", type=str, default="nested", choices=["nested", "flat"], help="Path generation mode for input files.")
     parser.add_argument("--output_path_mode", type=str, default="flat", choices=["nested", "flat"], help="Path generation mode for output files.")
 
-    # Corrected: parse arguments only once
     args = parser.parse_args()
+
+    # Load configuration from the specified YAML file
+    config = load_config(args.config)
 
     # Ensure the output directory exists
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -79,36 +86,35 @@ def main():
     dataframe = pd.read_csv(args.dataframe_path)
     print(f"Loaded dataframe with {len(dataframe)} records.")
 
-    # Instantiate the dataset.
+    # Instantiate the dataset using parameters from the loaded config
     # CRITICAL: use_cache is set to False to ensure the preprocessing pipeline
-    # (including the saving transform) is executed for every item, rather than
-    # loading from a pre-existing cache.
+    # (including the saving transform) is executed for every item.
     dataset = CTDataset3D(
         dataframe=dataframe,
         img_dir=args.img_dir,
-        pathology_columns=config.PATHOLOGY_COLUMNS,
-        target_spacing_xyz=config.TARGET_SPACING_XYZ,
-        target_shape_dhw=config.TARGET_SHAPE_DHW,
-        clip_hu_min=config.CLIP_HU_MIN,
-        clip_hu_max=config.CLIP_HU_MAX,
-        orientation_axcodes=config.ORIENTATION_AXCODES,
+        pathology_columns=config.pathologies.columns,
+        target_spacing_xyz=config.image_processing.target_spacing,
+        target_shape_dhw=config.image_processing.target_shape_dhw,
+        clip_hu_min=config.image_processing.clip_hu_min,
+        clip_hu_max=config.image_processing.clip_hu_max,
+        orientation_axcodes=config.image_processing.orientation_axcodes,
         use_cache=False,  # Disable cache to force processing and saving
         save_transformed_path=args.output_dir,  # Provide the output path
-        # Pass the path modes to the dataset constructor
         path_mode=args.input_path_mode,
         output_path_mode=args.output_path_mode
     )
 
     print(f"Starting preprocessing of {len(dataset)} scans...")
 
-    # Iterate through the entire dataset. Accessing each item triggers the 
+    # Iterate through the entire dataset. Accessing each item triggers the
     # __getitem__ method, which applies the transformation pipeline. Because
     # we provided a 'save_transformed_path', the SaveImaged transform will
     # execute and save the file.
     for i in tqdm(range(len(dataset)), desc="Preprocessing and Saving Scans"):
-        dataset[i]
+        # The __getitem__ call here triggers the processing and saving
+        _ = dataset[i]
 
-    print(f"Preprocessing and saving complete. Transformed files are in {args.output_dir}")
+    print(f"\nPreprocessing and saving complete. Transformed files are in {args.output_dir}")
 
 if __name__ == '__main__':
     main()
