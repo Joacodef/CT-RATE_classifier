@@ -558,8 +558,7 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
                 "valid_loss": valid_loss,
-                "learning_rate": optimizer.param_groups[0]['lr'],
-                **metrics_for_loop # Unpack all computed metrics.
+                "val_roc_auc_macro": metrics_for_loop.get('roc_auc_macro', 0.0), # Log macro AUC
             }
             try:
                 wandb_run.log(log_payload)
