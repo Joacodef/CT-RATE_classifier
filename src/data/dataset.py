@@ -23,8 +23,8 @@ class CTDataset3D(Dataset):
                  pathology_columns: List[str], target_spacing_xyz: np.ndarray,
                  target_shape_dhw: Tuple[int, int, int], clip_hu_min: float, clip_hu_max: float,
                  use_cache: bool = True, cache_dir: Optional[Path] = None,
-                 augment: bool = False, orientation_axcodes: str = "LPS",
-                 save_transformed_path: Optional[Path] = None): # Step 2.1: Add new argument
+                 augment: bool = False, orientation_axcodes: str = "LPS", path_mode: str = 'nested',
+                 save_transformed_path: Optional[Path] = None):
         """
         Initializes the CTDataset3D instance.
 
@@ -61,7 +61,9 @@ class CTDataset3D(Dataset):
         self.clip_hu_min = float(clip_hu_min)
         self.clip_hu_max = float(clip_hu_max)
         self.orientation_axcodes = orientation_axcodes
-        self.save_transformed_path = save_transformed_path # Store the new path
+        self.path_mode = path_mode 
+        self.save_transformed_path = save_transformed_path
+        
 
         self.use_cache = use_cache
         self.cache_dir = Path(cache_dir) if cache_dir else None
@@ -164,7 +166,7 @@ class CTDataset3D(Dataset):
         volume_name = row['VolumeName']
         labels_data = row[self.pathology_columns].values.astype(np.float32)
         labels = torch.tensor(labels_data, dtype=torch.float32)
-        img_path = get_dynamic_image_path(self.img_dir, volume_name)
+        img_path = get_dynamic_image_path(self.img_dir, volume_name, mode=self.path_mode)
 
         pixel_values: torch.Tensor
         if not img_path or not img_path.exists():

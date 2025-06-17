@@ -40,7 +40,7 @@ from data.dataset import CTDataset3D
 def main():
     """
     Main function to run the data preprocessing and saving script.
-    
+
     Parses command-line arguments, sets up the dataset, and iterates through
     it to trigger the saving of preprocessed images.
     """
@@ -65,6 +65,10 @@ def main():
         required=True,
         help='Path to the directory where transformed images will be saved.'
     )
+    parser.add_argument("--input_path_mode", type=str, default="nested", choices=["nested", "flat"], help="Path generation mode for input files.")
+    parser.add_argument("--output_path_mode", type=str, default="flat", choices=["nested", "flat"], help="Path generation mode for output files.")
+
+    # Corrected: parse arguments only once
     args = parser.parse_args()
 
     # Ensure the output directory exists
@@ -89,11 +93,14 @@ def main():
         clip_hu_max=config.CLIP_HU_MAX,
         orientation_axcodes=config.ORIENTATION_AXCODES,
         use_cache=False,  # Disable cache to force processing and saving
-        save_transformed_path=args.output_dir  # Provide the output path
+        save_transformed_path=args.output_dir,  # Provide the output path
+        # Pass the path modes to the dataset constructor
+        path_mode=args.input_path_mode,
+        output_path_mode=args.output_path_mode
     )
-    
+
     print(f"Starting preprocessing of {len(dataset)} scans...")
-    
+
     # Iterate through the entire dataset. Accessing each item triggers the 
     # __getitem__ method, which applies the transformation pipeline. Because
     # we provided a 'save_transformed_path', the SaveImaged transform will
