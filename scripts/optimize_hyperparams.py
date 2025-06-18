@@ -47,7 +47,7 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
 
     # Set path to subset file if it exists for the current stage.
     # The trainer will use this path to filter the main training data.
-    config.paths.labels.train_subset_path = None  # Initialize to None
+    config.paths.train_subset_path = None  # Initialize to None
 
     # Fallback to full dataset if subset files do not exist
     if not all(
