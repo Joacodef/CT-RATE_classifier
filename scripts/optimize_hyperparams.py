@@ -117,7 +117,7 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
     logger.info(f"Parameters: {trial.params}")
 
     try:
-        history = train_model(config=config)
+        _, history = train_model(config=config)
         validation_metrics = [
             m["roc_auc_macro"]
             for m in history["metrics"]
