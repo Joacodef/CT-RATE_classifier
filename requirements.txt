@@ -25,3 +25,4 @@ wandb==0.19.11
 nbformat==5.10.4
 
 pyyaml==6.0
+optuna==4.4.0
