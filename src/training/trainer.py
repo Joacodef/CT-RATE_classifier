@@ -389,6 +389,7 @@ def train_model(
         cache_dir=config.paths.cache_dir,
         augment=True,
         orientation_axcodes=config.image_processing.orientation_axcodes,
+        path_mode=config.paths.dir_structure
     )
     valid_dataset = CTDataset3D(
         dataframe=valid_df,
@@ -402,6 +403,7 @@ def train_model(
         cache_dir=config.paths.cache_dir,
         augment=False,
         orientation_axcodes=config.image_processing.orientation_axcodes,
+        path_mode=config.paths.dir_structure
     )
 
     train_loader = DataLoader(
