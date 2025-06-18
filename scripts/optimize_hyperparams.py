@@ -58,17 +58,17 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
         )
     else:
         if trial_num < args.trials_on_5_percent:
-            config.paths.labels.train_subset_path = path_train_05
+            config.paths.train_subset_path = path_train_05
             logger.info(
                 f"Using 5% training subset for trial {trial_num}: {path_train_05}"
             )
         elif trial_num < args.trials_on_20_percent:
-            config.paths.labels.train_subset_path = path_train_20
+            config.paths.train_subset_path = path_train_20
             logger.info(
                 f"Using 20% training subset for trial {trial_num}: {path_train_20}"
             )
         elif trial_num < args.trials_on_50_percent:
-            config.paths.labels.train_subset_path = path_train_50
+            config.paths.train_subset_path = path_train_50
             logger.info(
                 f"Using 50% training subset for trial {trial_num}: {path_train_50}"
             )
