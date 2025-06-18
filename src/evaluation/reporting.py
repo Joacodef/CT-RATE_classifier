@@ -124,7 +124,7 @@ def generate_final_report(history: dict, config):
     # 5. Per-Pathology AUC Heatmap (Final Epoch)
     final_metrics = history['metrics'][-1]
     pathology_aucs = {}
-    for pathology in config.PATHOLOGY_COLUMNS:
+    for pathology in config.pathologies.columns:
         key = f"{pathology}_auc"
         if key in final_metrics:
             pathology_aucs[pathology] = final_metrics[key]
@@ -163,10 +163,10 @@ def generate_final_report(history: dict, config):
     
     # 6. Learning Rate Schedule (if available)
     ax6 = fig.add_subplot(gs[2, 0])
-    if hasattr(config, 'LEARNING_RATE'):
+    if hasattr(config, 'training') and hasattr(config.training, 'learning_rate'):
         # Approximate cosine annealing schedule visualization
         lr_schedule = []
-        initial_lr = config.LEARNING_RATE
+        initial_lr = config.training.learning_rate
         for epoch in range(len(epochs)):
             if epoch < len(epochs):
                 # Cosine annealing formula
@@ -207,7 +207,7 @@ def generate_final_report(history: dict, config):
     performance_matrix = []
     pathology_names_short = []
     
-    for pathology in config.PATHOLOGY_COLUMNS:
+    for pathology in config.pathologies.columns:
         row = []
         for metric in pathology_metrics:
             key = f"{pathology}_{metric}"
@@ -247,19 +247,19 @@ def generate_final_report(history: dict, config):
         ax8.set_title('Per-Pathology Performance Metrics (Best Epoch)', fontsize=14, fontweight='bold', pad=20)
     
     # Overall title
-    fig.suptitle(f'CT 3D Classifier Training Report - {config.MODEL_TYPE}', fontsize=16, fontweight='bold')
+    fig.suptitle(f'CT 3D Classifier Training Report - {config.model.type}', fontsize=16, fontweight='bold')
     
     # Save the figure with tight layout
     plt.tight_layout()
     
     # Save the figure
-    report_path = config.OUTPUT_DIR / 'training_report.png'
+    report_path = config.paths.output_dir / 'training_report.png'
     plt.savefig(report_path, dpi=300, bbox_inches='tight', facecolor='white', 
                 edgecolor='none', pad_inches=0.2)
     logger.info(f"Training report saved to: {report_path}")
     
     # Also save as PDF for better quality
-    report_pdf_path = config.OUTPUT_DIR / 'training_report.pdf'
+    report_pdf_path = config.paths.output_dir / 'training_report.pdf'
     plt.savefig(report_pdf_path, format='pdf', bbox_inches='tight', facecolor='white',
                 edgecolor='none', pad_inches=0.2)
     logger.info(f"Training report (PDF) saved to: {report_pdf_path}")
@@ -299,7 +299,7 @@ def generate_csv_report(history: dict, config, best_epoch_idx: int):
     
     # Create DataFrame and save
     metrics_df = pd.DataFrame(metrics_data)
-    csv_path = config.OUTPUT_DIR / 'training_metrics_detailed.csv'
+    csv_path = config.paths.output_dir / 'training_metrics_detailed.csv'
     metrics_df.to_csv(csv_path, index=False)
     logger.info(f"Detailed metrics CSV saved to: {csv_path}")
     
@@ -313,14 +313,14 @@ def generate_csv_report(history: dict, config, best_epoch_idx: int):
         'Final Training Loss': float(history['train_loss'][-1]),
         'Final Validation Loss': float(history['valid_loss'][-1]),
         'Training Time per Epoch (avg)': 'Not tracked',
-        'Model Type': str(config.MODEL_TYPE) if hasattr(config, 'MODEL_TYPE') else 'Unknown',
-        'Batch Size': int(config.BATCH_SIZE) if hasattr(config, 'BATCH_SIZE') else 'Unknown',
-        'Learning Rate': float(config.LEARNING_RATE) if hasattr(config, 'LEARNING_RATE') else 'Unknown',
-        'Target Shape (DHW)': list(config.TARGET_SHAPE_DHW) if hasattr(config, 'TARGET_SHAPE_DHW') else 'Unknown',
-        'Number of Pathologies': int(config.NUM_PATHOLOGIES) if hasattr(config, 'NUM_PATHOLOGIES') else 'Unknown'
+        'Model Type': str(config.model.type) if hasattr(config, 'model') else 'Unknown',
+        'Batch Size': int(config.training.batch_size) if hasattr(config, 'training') else 'Unknown',
+        'Learning Rate': float(config.training.learning_rate) if hasattr(config, 'training') else 'Unknown',
+        'Target Shape (DHW)': list(config.image_processing.target_shape_dhw) if hasattr(config, 'image_processing') else 'Unknown',
+        'Target Spacing (mm)': list(config.image_processing.target_spacing) if hasattr(config, 'image_processing') else 'Unknown',
     }
     
     # Save summary using safe JSON dump
-    summary_path = config.OUTPUT_DIR / 'training_summary.json'
+    summary_path = config.paths.output_dir / 'training_summary.json'
     safe_json_dump(summary_stats, summary_path)
     logger.info(f"Training summary saved to: {summary_path}")

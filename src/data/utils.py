@@ -9,7 +9,7 @@ def get_dynamic_image_path(base_dir: Path, volume_name: str, dir_structure: str)
 
     Args:
         base_dir (Path): The root directory where the images are stored.
-        volume_name (str): The volume identifier, which is the filename without extension.
+        volume_name (str): The volume identifier, which can be with or without the extension.
         dir_structure (str): The directory structure mode. Can be 'nested' or 'flat'.
                            This should correspond to the `paths.dir_structure` config value.
 
@@ -19,12 +19,14 @@ def get_dynamic_image_path(base_dir: Path, volume_name: str, dir_structure: str)
     Raises:
         ValueError: If an unsupported mode is provided.
     """
-    volume_filename = f"{volume_name}.nii.gz"
+    # Correctly handle volume names that may or may not have an extension.
+    volume_stem = volume_name.replace(".nii.gz", "").replace(".nii", "")
+    volume_filename = f"{volume_stem}.nii.gz"
 
     if dir_structure == 'nested':
         # Handles reading from a hierarchical structure.
         # e.g., train_1_a_1 -> base_dir/train_1/train_1_a/train_1_a_1.nii.gz
-        parts = volume_name.split('_')
+        parts = volume_stem.split('_')
         if len(parts) >= 3:
             subject_session = f"{parts[0]}_{parts[1]}"
             subject_session_scan = f"{parts[0]}_{parts[1]}_{parts[2]}"
@@ -32,7 +34,7 @@ def get_dynamic_image_path(base_dir: Path, volume_name: str, dir_structure: str)
         else:
             # If the name doesn't fit the nested pattern, assume it's in the base directory.
             logger.warning(
-                f"Volume name '{volume_name}' does not match the expected nested pattern. "
+                f"Volume name '{volume_stem}' does not match the expected nested pattern. "
                 f"Falling back to a flat search in the base directory."
             )
             return base_dir / volume_filename
