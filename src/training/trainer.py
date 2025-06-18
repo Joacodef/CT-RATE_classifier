@@ -118,6 +118,30 @@ def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.Dat
         
         train_volumes = pd.read_csv(config.paths.data_subsets.train)[['VolumeName']]
         valid_volumes = pd.read_csv(config.paths.data_subsets.valid)[['VolumeName']]
+        
+        # Check if we need to filter training data using a subset file
+        if hasattr(config.paths, 'train_subset_path') and config.paths.train_subset_path:
+            subset_path = config.paths.train_subset_path
+            if subset_path.exists():
+                logger.info(f"Applying training subset filter from: {subset_path}")
+                original_count = len(train_volumes)
+                
+                # Load the subset file containing filtered VolumeNames
+                subset_df = pd.read_csv(subset_path)[['VolumeName']]
+                
+                # Filter train_volumes to only include VolumeNames in the subset
+                train_volumes = train_volumes[train_volumes['VolumeName'].isin(subset_df['VolumeName'])]
+                
+                filtered_count = len(train_volumes)
+                logger.info(f"Training data filtered from {original_count} to {filtered_count} volumes "
+                          f"({filtered_count/original_count*100:.1f}% of original)")
+                
+                # Validate that we still have data after filtering
+                if train_volumes.empty:
+                    raise ValueError(f"No matching VolumeNames found between subset file and training volumes")
+            else:
+                logger.warning(f"Subset path specified but file not found: {subset_path}. Using full training set.")
+        
         train_labels = pd.read_csv(config.paths.labels.train)
         valid_labels = pd.read_csv(config.paths.labels.valid)
         # Merge volumes with labels.
