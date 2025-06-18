@@ -33,7 +33,7 @@ paths:
     train: "metadata/train_metadata.csv"
     valid: "metadata/valid_metadata.csv"
 
-  output_dir: "ct_3d_classifier_output"
+  output_dir: "output"
 
 # --- Model Configuration ---
 model:

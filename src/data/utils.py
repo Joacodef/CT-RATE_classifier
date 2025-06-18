@@ -1,18 +1,17 @@
 from pathlib import Path
+import logging
 
-def get_dynamic_image_path(base_img_dir: Path, volume_filename: str, mode: str = 'nested') -> Path:
+logger = logging.getLogger(__name__)
+
+def get_dynamic_image_path(base_dir: Path, volume_name: str, dir_structure: str) -> Path:
     """
-    Construct the full path to a NIfTI volume using different modes.
+    Constructs the full path to an existing NIfTI volume based on the source directory structure.
 
     Args:
-        base_img_dir (Path): The root directory for the images.
-        volume_filename (str): The volume identifier.
-        mode (str): The path generation mode. Can be 'nested' or 'flat'.
-                    - 'nested': For reading original files from a hierarchical
-                                structure (e.g., base/subj/scan/file.nii.gz).
-                                Falls back to flat structure for simple names.
-                    - 'flat': For writing processed files to a flat directory,
-                              appending '__transformed.nii.gz'.
+        base_dir (Path): The root directory where the images are stored.
+        volume_name (str): The volume identifier, which is the filename without extension.
+        dir_structure (str): The directory structure mode. Can be 'nested' or 'flat'.
+                           This should correspond to the `paths.dir_structure` config value.
 
     Returns:
         Path: The full, resolved path to the NIfTI file.
@@ -20,37 +19,28 @@ def get_dynamic_image_path(base_img_dir: Path, volume_filename: str, mode: str =
     Raises:
         ValueError: If an unsupported mode is provided.
     """
-    if mode == 'nested':
-        # This logic handles reading from a hierarchical structure.
-        # It ensures the filename has the correct extension.
-        if not volume_filename.endswith('.nii.gz'):
-            if volume_filename.endswith('.nii'):
-                volume_filename = volume_filename[:-4]  # Avoid .nii.nii.gz
-            volume_filename += '.nii.gz'
+    volume_filename = f"{volume_name}.nii.gz"
 
-        name_without_ext = volume_filename.replace('.nii.gz', '')
-        parts = name_without_ext.split('_')
-
+    if dir_structure == 'nested':
+        # Handles reading from a hierarchical structure.
+        # e.g., train_1_a_1 -> base_dir/train_1/train_1_a/train_1_a_1.nii.gz
+        parts = volume_name.split('_')
         if len(parts) >= 3:
-            # Create hierarchical path for filenames with sufficient parts.
             subject_session = f"{parts[0]}_{parts[1]}"
             subject_session_scan = f"{parts[0]}_{parts[1]}_{parts[2]}"
-            return base_img_dir / subject_session / subject_session_scan / volume_filename
+            return base_dir / subject_session / subject_session_scan / volume_filename
         else:
-            # Fallback to a flat structure for simpler filenames.
-            return base_img_dir / volume_filename
+            # If the name doesn't fit the nested pattern, assume it's in the base directory.
+            logger.warning(
+                f"Volume name '{volume_name}' does not match the expected nested pattern. "
+                f"Falling back to a flat search in the base directory."
+            )
+            return base_dir / volume_filename
 
-    elif mode == 'flat':
-        # This logic handles writing to a flat structure with a transformed suffix.
-        filename_stem = Path(volume_filename).name
-        if filename_stem.endswith(".nii.gz"):
-            filename_stem = filename_stem[:-7]
-        elif filename_stem.endswith(".nii"):
-            filename_stem = filename_stem[:-4]
-
-        transformed_filename = f"{filename_stem}__transformed.nii.gz"
-        return base_img_dir / transformed_filename
+    elif dir_structure == 'flat':
+        # Handles reading from a simple, flat directory structure.
+        return base_dir / volume_filename
 
     else:
-        raise ValueError(f"Unsupported mode: '{mode}'. Choose 'nested' or 'flat'.")
+        raise ValueError(f"Unsupported dir_structure: '{dir_structure}'. Choose 'nested' or 'flat'.")
 

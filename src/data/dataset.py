@@ -166,7 +166,7 @@ class CTDataset3D(Dataset):
         volume_name = row['VolumeName']
         labels_data = row[self.pathology_columns].values.astype(np.float32)
         labels = torch.tensor(labels_data, dtype=torch.float32)
-        img_path = get_dynamic_image_path(self.img_dir, volume_name, mode=self.path_mode)
+        img_path = get_dynamic_image_path(self.img_dir, volume_name, dir_structure=self.path_mode)
 
         pixel_values: torch.Tensor
         if not img_path or not img_path.exists():

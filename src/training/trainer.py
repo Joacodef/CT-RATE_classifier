@@ -114,6 +114,7 @@ def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.Dat
     logger.info("Loading DataFrames...")
     try:
         # Load volume lists and label data using resolved paths from config
+        
         train_volumes = pd.read_csv(config.paths.data_subsets.train)[['VolumeName']]
         valid_volumes = pd.read_csv(config.paths.data_subsets.valid)[['VolumeName']]
         train_labels = pd.read_csv(config.paths.labels.train)
@@ -375,7 +376,9 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
         use_cache=config.cache.use_cache,
         cache_dir=config.paths.cache_dir,
         augment=True,
-        orientation_axcodes=config.image_processing.orientation_axcodes
+        orientation_axcodes=config.image_processing.orientation_axcodes,
+        path_mode = config.paths.dir_structure # Pass directory structure mode to dataset
+        
     )
     valid_dataset = CTDataset3D(
         dataframe=valid_df,
@@ -388,7 +391,8 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
         use_cache=config.cache.use_cache,
         cache_dir=config.paths.cache_dir,
         augment=False,
-        orientation_axcodes=config.image_processing.orientation_axcodes
+        orientation_axcodes=config.image_processing.orientation_axcodes,
+        path_mode = config.paths.dir_structure # Pass directory structure mode to dataset
     )
 
     train_loader = DataLoader(
