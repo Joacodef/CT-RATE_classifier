@@ -41,6 +41,8 @@ def get_dynamic_image_path(base_dir: Path, volume_name: str, dir_structure: str)
 
     elif dir_structure == 'flat':
         # Handles reading from a simple, flat directory structure.
+        # add __transformed before the .nii.gz extension
+        volume_filename = volume_filename.replace(".nii.gz", "__transformed.nii.gz")
         return base_dir / volume_filename
 
     else:
