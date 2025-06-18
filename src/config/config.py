@@ -82,22 +82,39 @@ def load_config(config_path: str | Path) -> SimpleNamespace:
     cfg = _dict_to_namespace(subst_config)
 
     # 4. Resolve and process paths
-    base_project_dir = Path(cfg.paths.base_project_dir).resolve()
-    cfg.paths.base_project_dir = base_project_dir
+    cfg.paths.base_project_dir = Path(cfg.paths.base_project_dir).resolve()
     cfg.paths.train_img_dir = Path(cfg.paths.train_img_dir).resolve()
     cfg.paths.valid_img_dir = Path(cfg.paths.valid_img_dir).resolve()
     cfg.paths.cache_dir = Path(cfg.paths.cache_dir).resolve()
 
-    # Resolve paths relative to the project directory
-    cfg.paths.data_subsets.selected_train_volumes = (
-        base_project_dir / cfg.paths.data_subsets.selected_train_volumes
+    data_dir = Path(cfg.paths.data_dir).resolve()
+    cfg.paths.data_dir = data_dir
+
+    # Resolve paths relative to the data directory
+    cfg.paths.data_subsets.train = (
+        data_dir / cfg.paths.data_subsets.train
     )
-    cfg.paths.data_subsets.selected_valid_volumes = (
-        base_project_dir / cfg.paths.data_subsets.selected_valid_volumes
+    cfg.paths.data_subsets.valid = (
+        data_dir / cfg.paths.data_subsets.valid
     )
-    cfg.paths.labels.train = base_project_dir / cfg.paths.labels.train
-    cfg.paths.labels.valid = base_project_dir / cfg.paths.labels.valid
-    cfg.paths.output_dir = base_project_dir / cfg.paths.output_dir
+    cfg.paths.labels.train = (
+        data_dir / cfg.paths.labels.train
+    )
+    cfg.paths.labels.valid = (
+        data_dir / cfg.paths.labels.valid
+    )
+    cfg.paths.reports.train = (
+        data_dir / cfg.paths.reports.train
+    )
+    cfg.paths.reports.valid = (
+        data_dir / cfg.paths.reports.valid
+    )
+    cfg.paths.metadata.train = (
+        data_dir / cfg.paths.metadata.train
+    )
+    cfg.paths.metadata.valid = (
+        data_dir / cfg.paths.metadata.valid
+    )
 
     # 5. Perform final type conversions and add computed values
     cfg.image_processing.target_spacing = np.array(

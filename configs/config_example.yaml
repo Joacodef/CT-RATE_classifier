@@ -15,14 +15,23 @@ paths:
   valid_img_dir: ${VALID_IMG_DIR}
   base_project_dir: ${BASE_PROJECT_DIR}
   cache_dir: ${CACHE_DIR}
+  data_dir: ${DATA_DIR}
+
+  dir_structure: "flat"
 
   # These paths are relative to the base_project_dir
   data_subsets:
-    selected_train_volumes: "generated_subsets/selected_train_volumes.csv"
-    selected_valid_volumes: "generated_subsets/selected_valid_volumes.csv"
+    train: "splits/tiny_split/train.csv"
+    valid: "splits/tiny_split/valid.csv"
   labels:
-    train: "dataset/multi_abnormality_labels/train_predicted_labels.csv"
-    valid: "dataset/multi_abnormality_labels/valid_predicted_labels.csv"
+    train: "labels/multi_abnormality_labels/train_predicted_labels.csv"
+    valid: "labels/multi_abnormality_labels/valid_predicted_labels.csv"
+  reports:
+    train: "radiology_text_reports/train_reports.csv"
+    valid: "radiology_text_reports/valid_reports.csv"
+  metadata:
+    train: "metadata/train_metadata.csv"
+    valid: "metadata/valid_metadata.csv"
 
   output_dir: "ct_3d_classifier_output"
 

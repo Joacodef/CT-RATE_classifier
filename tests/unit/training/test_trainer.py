@@ -131,10 +131,10 @@ class TestLoadAndPrepareData:
         """Helper to create mock CSV files for testing."""
         # Create dummy CSV files
         pd.DataFrame({'VolumeName': [f'vol_{i}' for i in range(5)]}).to_csv(
-            mock_config.paths.data_subsets.selected_train_volumes, index=False
+            mock_config.paths.data_subsets.train, index=False
         )
         pd.DataFrame({'VolumeName': [f'vol_{i}' for i in range(5, 8)]}).to_csv(
-            mock_config.paths.data_subsets.selected_valid_volumes, index=False
+            mock_config.paths.data_subsets.valid, index=False
         )
         train_labels = pd.DataFrame({
             'VolumeName': [f'vol_{i}' for i in range(5)],
@@ -167,7 +167,7 @@ class TestLoadAndPrepareData:
     def test_empty_dataframe_raises_error(self, mock_config, setup_mock_csv_files):
         # Create an empty volume list to cause an empty merged dataframe
         pd.DataFrame({'VolumeName': []}).to_csv(
-            mock_config.paths.data_subsets.selected_train_volumes, index=False
+            mock_config.paths.data_subsets.train, index=False
         )
         with pytest.raises(ValueError, match="Training or validation dataframe is empty"):
             load_and_prepare_data(mock_config)

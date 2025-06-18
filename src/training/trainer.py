@@ -114,8 +114,8 @@ def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.Dat
     logger.info("Loading DataFrames...")
     try:
         # Load volume lists and label data using resolved paths from config
-        train_volumes = pd.read_csv(config.paths.data_subsets.selected_train_volumes)[['VolumeName']]
-        valid_volumes = pd.read_csv(config.paths.data_subsets.selected_valid_volumes)[['VolumeName']]
+        train_volumes = pd.read_csv(config.paths.data_dir + "/" +config.paths.data_subsets.train)[['VolumeName']]
+        valid_volumes = pd.read_csv(config.paths.data_subsets.valid)[['VolumeName']]
         train_labels = pd.read_csv(config.paths.labels.train)
         valid_labels = pd.read_csv(config.paths.labels.valid)
         # Merge volumes with labels.

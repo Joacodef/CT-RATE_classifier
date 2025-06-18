@@ -100,11 +100,11 @@ class ModelEvaluator:
         """Prepare dataset for evaluation"""
         self.logger.info(f"Preparing dataset for '{dataset_type}' evaluation.") # Log dataset type
         if dataset_type == 'validation':
-            volumes_csv = self.config.paths.data_subsets.selected_valid_volumes
+            volumes_csv = self.config.paths.data_subsets.valid
             labels_csv = self.config.paths.labels.valid
             img_dir = self.config.paths.valid_img_dir
         elif dataset_type == 'train': # Added train dataset option
-            volumes_csv = self.config.paths.data_subsets.selected_train_volumes
+            volumes_csv = self.config.paths.data_subsets.train
             labels_csv = self.config.paths.labels.train
             img_dir = self.config.paths.train_img_dir
         else:
