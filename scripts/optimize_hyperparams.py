@@ -43,11 +43,10 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
     trial_num = trial.number
 
     # --- Staged Optimization: Select data subset based on trial number ---
-    base_split_dir = config.paths.labels.train.parent
+    base_split_dir = config.paths.data_subsets.train.parent
     path_train_05 = base_split_dir / "train_05_percent.csv"
     path_train_20 = base_split_dir / "train_20_percent.csv"
     path_train_50 = base_split_dir / "train_50_percent.csv"
-    path_train_full = config.paths.labels.train
 
     # Fallback to full dataset if subset files do not exist
     if not all(
