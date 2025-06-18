@@ -72,8 +72,7 @@ def main():
     
     # 3. Setup logging and start training
     # The output directory is now defined in the config, so we can create the log file there
-    log_file = config.paths.output_dir / "training_run.log"
-    setup_logging(log_file_path=log_file)
+    setup_logging(log_file=config.paths.output_dir / 'ct_3d_training.log')
     
     logging.info("Configuration loaded and processed. Starting training.")
     train_model(config)

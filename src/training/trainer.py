@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Tuple, Dict, Any
+from types import SimpleNamespace
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 
@@ -17,24 +18,18 @@ import numpy as np
 import pandas as pd
 import wandb
 
-# Internal imports - config
-import sys
-sys.path.append(str(Path(__file__).parent.parent))
-
-from config import Config
-
 # Internal imports - models
-from models.resnet3d import resnet18_3d, resnet34_3d
-from models.densenet3d import densenet121_3d, densenet169_3d, densenet201_3d, densenet161_3d, densenet_small_3d, densenet_tiny_3d
-from models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d
-from models.losses import FocalLoss
+from src.models.resnet3d import resnet18_3d, resnet34_3d
+from src.models.densenet3d import densenet121_3d, densenet169_3d, densenet201_3d, densenet161_3d
+from src.models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d
+from src.models.losses import FocalLoss
 
 # Internal imports - data
-from data.dataset import CTDataset3D
+from src.data.dataset import CTDataset3D
 
 # Internal imports - training utilities
-from .metrics import compute_metrics
-from .utils import (
+from src.training.metrics import compute_metrics
+from src.training.utils import (
     EarlyStopping,
     save_checkpoint,
     load_checkpoint,
@@ -42,76 +37,54 @@ from .utils import (
 )
 
 # Internal imports - evaluation
-from evaluation.reporting import generate_final_report
+from src.evaluation.reporting import generate_final_report
 
 # Internal imports - utils
-from utils.torch_utils import setup_torch_optimizations
+from src.utils.torch_utils import setup_torch_optimizations
 
 # Get logger
 logger = logging.getLogger(__name__)
 
-def create_model(config: Config) -> nn.Module:
+def create_model(config: SimpleNamespace) -> nn.Module:
     """Create and return the 3D model based on the provided configuration."""
 
-    model_type = config.MODEL_TYPE.lower()
-    model_variant = getattr(config, 'MODEL_VARIANT', 'default').lower()
+    model_type = config.model.type.lower()
+    model_variant = str(config.model.variant).lower()
+    num_classes = len(config.pathologies.columns)
+    use_checkpointing = config.optimization.gradient_checkpointing
 
     if model_type == "resnet3d":
         if model_variant == "34":
-            model = resnet34_3d(
-                num_classes=config.NUM_PATHOLOGIES,
-                use_checkpointing=config.GRADIENT_CHECKPOINTING
-            )
-            logger.info(f"Created ResNet3D-34 model")
+            model = resnet34_3d(num_classes=num_classes, use_checkpointing=use_checkpointing)
+            logger.info("Created ResNet3D-34 model")
         else:  # Default to ResNet-18
-            model = resnet18_3d(
-                num_classes=config.NUM_PATHOLOGIES,
-                use_checkpointing=config.GRADIENT_CHECKPOINTING
-            )
-            logger.info(f"Created ResNet3D-18 model")
+            model = resnet18_3d(num_classes=num_classes, use_checkpointing=use_checkpointing)
+            logger.info("Created ResNet3D-18 model")
 
     elif model_type == "densenet3d":
         densenet_models = {
-            "121": densenet121_3d,
-            "169": densenet169_3d,
-            "201": densenet201_3d,
-            "161": densenet161_3d,
-            "small": densenet_small_3d,
-            "tiny": densenet_tiny_3d
+            "121": densenet121_3d, "169": densenet169_3d, "201": densenet201_3d, "161": densenet161_3d
         }
-
-        model_fn = densenet_models.get(model_variant, densenet121_3d)
-        model = model_fn(
-            num_classes=config.NUM_PATHOLOGIES,
-            use_checkpointing=config.GRADIENT_CHECKPOINTING
-        )
+        model_fn = densenet_models.get(model_variant, densenet121_3d) # Default to 121
+        model = model_fn(num_classes=num_classes, use_checkpointing=use_checkpointing)
         logger.info(f"Created DenseNet3D-{model_variant or '121'} model")
 
     elif model_type == "vit3d":
         vit_models = {
-            "tiny": vit_tiny_3d,
-            "small": vit_small_3d,
-            "base": vit_base_3d,
-            "large": vit_large_3d
+            "tiny": vit_tiny_3d, "small": vit_small_3d, "base": vit_base_3d, "large": vit_large_3d
         }
-
-        model_fn = vit_models.get(model_variant, vit_small_3d)
-
-        # Get ViT-specific config options
-        patch_size = getattr(config, 'VIT_PATCH_SIZE', (16, 16, 16))
-
+        model_fn = vit_models.get(model_variant, vit_small_3d) # Default to small
         model = model_fn(
-            num_classes=config.NUM_PATHOLOGIES,
-            use_checkpointing=config.GRADIENT_CHECKPOINTING,
-            volume_size=config.TARGET_SHAPE_DHW,
-            patch_size=patch_size
+            num_classes=num_classes,
+            use_checkpointing=use_checkpointing,
+            volume_size=config.image_processing.target_shape_dhw,
+            patch_size=config.model.vit_specific.patch_size
         )
-        logger.info(f"Created ViT3D-{model_variant or 'small'} model with patch_size={patch_size}")
+        logger.info(f"Created ViT3D-{model_variant or 'small'} model")
 
     else:
-        raise ValueError(f"Unknown model type: {config.MODEL_TYPE}")
+        raise ValueError(f"Unknown model type: {config.model.type}")
 
-    # Log model parameters count
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
@@ -119,7 +92,7 @@ def create_model(config: Config) -> nn.Module:
     return model
 
 
-def load_and_prepare_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load and prepare training and validation dataframes.
 
     This function reads volume and label CSVs, merges them, handles missing
@@ -140,11 +113,11 @@ def load_and_prepare_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     logger.info("Loading DataFrames...")
     try:
-        # Load volume lists and label data.
-        train_volumes = pd.read_csv(config.SELECTED_TRAIN_VOLUMES_CSV)[['VolumeName']]
-        valid_volumes = pd.read_csv(config.SELECTED_VALID_VOLUMES_CSV)[['VolumeName']]
-        train_labels = pd.read_csv(config.TRAIN_LABELS_CSV)
-        valid_labels = pd.read_csv(config.VALID_LABELS_CSV)
+        # Load volume lists and label data using resolved paths from config
+        train_volumes = pd.read_csv(config.paths.data_subsets.selected_train_volumes)[['VolumeName']]
+        valid_volumes = pd.read_csv(config.paths.data_subsets.selected_valid_volumes)[['VolumeName']]
+        train_labels = pd.read_csv(config.paths.labels.train)
+        valid_labels = pd.read_csv(config.paths.labels.valid)
         # Merge volumes with labels.
         train_df = pd.merge(train_volumes, train_labels, on='VolumeName', how='inner')
         valid_df = pd.merge(valid_volumes, valid_labels, on='VolumeName', how='inner')
@@ -164,18 +137,19 @@ def load_and_prepare_data(config: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     # Check for missing pathology columns and fill NaNs.
     for df, name in [(train_df, "training"), (valid_df, "validation")]:
-        missing_cols = [col for col in config.PATHOLOGY_COLUMNS if col not in df.columns]
+        missing_cols = [col for col in config.pathologies.columns if col not in df.columns]
+      
         if missing_cols:
             logger.error(f"Missing pathology columns in {name} data: {missing_cols}")
             raise ValueError(f"Missing pathology columns in {name} data: {missing_cols}")
         # Fill NaN values with 0 for pathology columns.
-        df[config.PATHOLOGY_COLUMNS] = df[config.PATHOLOGY_COLUMNS].fillna(0)
+        df[config.pathologies.columns] = df[config.pathologies.columns].fillna(0)
         # Ensure pathology columns are of integer type.
-        df[config.PATHOLOGY_COLUMNS] = df[config.PATHOLOGY_COLUMNS].astype(int)
+        df[config.pathologies.columns] = df[config.pathologies.columns].astype(int)
 
     logger.info(f"Data loaded: {len(train_df)} training, {len(valid_df)} validation samples")
     # Log positive class distribution for each pathology.
-    for pathology in config.PATHOLOGY_COLUMNS:
+    for pathology in config.pathologies.columns:
         train_pos = train_df[pathology].sum()
         valid_pos = valid_df[pathology].sum()
         logger.info(f"{pathology}: {train_pos}/{len(train_df)} train positive, "
@@ -310,7 +284,7 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Modul
     return avg_loss, all_predictions_np, all_labels_np
 
 
-def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
+def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
     """Main function to train the CT classification model.
 
     This function orchestrates the entire training process, including:
@@ -343,37 +317,38 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
     try:
         # Configuration payload for wandb.
         wandb_config_payload = {
-            "learning_rate": config.LEARNING_RATE,
-            "architecture": config.MODEL_TYPE,
-            "loss_function": config.LOSS_FUNCTION,
-            "focal_loss_alpha": config.FOCAL_LOSS_ALPHA if config.LOSS_FUNCTION == "FocalLoss" else None,
-            "focal_loss_gamma": config.FOCAL_LOSS_GAMMA if config.LOSS_FUNCTION == "FocalLoss" else None,
-            "target_shape_dhw": config.TARGET_SHAPE_DHW,
-            "target_spacing_xyz": config.TARGET_SPACING.tolist(),
-            "clip_hu_min": config.CLIP_HU_MIN,
-            "clip_hu_max": config.CLIP_HU_MAX,
-            "orientation_axcodes": config.ORIENTATION_AXCODES, # Added for wandb logging
-            "epochs": config.NUM_EPOCHS,
-            "batch_size": config.BATCH_SIZE,
-            "gradient_accumulation_steps": config.GRADIENT_ACCUMULATION_STEPS,
-            "weight_decay": config.WEIGHT_DECAY,
-            "num_workers": config.NUM_WORKERS,
-            "pin_memory": config.PIN_MEMORY,
-            "gradient_checkpointing": config.GRADIENT_CHECKPOINTING,
-            "mixed_precision": config.MIXED_PRECISION,
-            "use_bf16": config.USE_BF16,
-            "early_stopping_patience": config.EARLY_STOPPING_PATIENCE,
-            "use_cache": config.USE_CACHE,
-            "num_pathologies": config.NUM_PATHOLOGIES,
-            "pathology_columns": config.PATHOLOGY_COLUMNS,
-            "output_dir": str(config.OUTPUT_DIR),
-            "resume_from_checkpoint": str(config.RESUME_FROM_CHECKPOINT) if config.RESUME_FROM_CHECKPOINT else None,
+            "learning_rate": config.training.learning_rate,
+            "architecture": config.model.type,
+            "model_variant": config.model.variant,
+            "loss_function": config.loss_function.type,
+            "focal_loss_alpha": config.loss_function.focal_loss.alpha,
+            "focal_loss_gamma": config.loss_function.focal_loss.gamma,
+            "target_shape_dhw": config.image_processing.target_shape_dhw,
+            "target_spacing": config.image_processing.target_spacing,
+            "clip_hu_min": config.image_processing.clip_hu_min,
+            "clip_hu_max": config.image_processing.clip_hu_max,
+            "orientation_axcodes": config.image_processing.orientation_axcodes,
+            "epochs": config.training.num_epochs,
+            "batch_size": config.training.batch_size,
+            "gradient_accumulation_steps": config.training.gradient_accumulation_steps,
+            "weight_decay": config.training.weight_decay,
+            "num_workers": config.training.num_workers,
+            "pin_memory": config.training.pin_memory,
+            "gradient_checkpointing": config.optimization.gradient_checkpointing,
+            "mixed_precision": config.optimization.mixed_precision,
+            "use_bf16": config.optimization.use_bf16,
+            "early_stopping_patience": config.training.early_stopping_patience,
+            "use_cache": config.cache.use_cache,
+            "num_pathologies": len(config.pathologies.columns),
+            "pathology_columns": config.pathologies.columns,
+            "output_dir": str(config.paths.output_dir),
+            "resume_from_checkpoint": str(config.training.resume_from_checkpoint) if config.training.resume_from_checkpoint else None,
         }
         # Initialize Weights & Biases run.
         wandb_run = wandb.init(
             project="ct_classifier", # Project name in wandb.
             config=wandb_config_payload, # Pass configuration to wandb.
-            dir=str(config.OUTPUT_DIR) # Specify directory for wandb files.
+            dir=str(config.paths.output_dir) # Specify directory for wandb files.
         )
         logger.info(f"Weights & Biases initialized successfully. Run name: {wandb_run.name}")
 
@@ -382,47 +357,49 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
         logger.error(f"Failed to initialize Weights & Biases: {e}. Training will continue without wandb logging.")
 
     # Ensure output directory exists.
-    config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    config.paths.output_dir.mkdir(parents=True, exist_ok=True)
     # Load and prepare data.
     train_df, valid_df = load_and_prepare_data(config)
 
     # Create training and validation datasets.
+    logger.info("Using dataset class: CTDataset3D")
+
     train_dataset = CTDataset3D(
         dataframe=train_df,
-        img_dir=config.TRAIN_IMG_DIR,
-        pathology_columns=config.PATHOLOGY_COLUMNS,
-        target_spacing_xyz=config.TARGET_SPACING,
-        target_shape_dhw=config.TARGET_SHAPE_DHW,
-        clip_hu_min=config.CLIP_HU_MIN,
-        clip_hu_max=config.CLIP_HU_MAX,
-        use_cache=config.USE_CACHE,
-        cache_dir=config.CACHE_DIR,
-        augment=True, # Enable augmentation for training dataset.
-        orientation_axcodes=config.ORIENTATION_AXCODES # Pass orientation config
+        img_dir=config.paths.train_img_dir,
+        pathology_columns=config.pathologies.columns,
+        target_spacing_xyz=np.array(config.image_processing.target_spacing), # Ensure this is a numpy array
+        target_shape_dhw=config.image_processing.target_shape_dhw,
+        clip_hu_min=config.image_processing.clip_hu_min,
+        clip_hu_max=config.image_processing.clip_hu_max,
+        use_cache=config.cache.use_cache,
+        cache_dir=config.paths.cache_dir,
+        augment=True,
+        orientation_axcodes=config.image_processing.orientation_axcodes
     )
     valid_dataset = CTDataset3D(
         dataframe=valid_df,
-        img_dir=config.VALID_IMG_DIR,
-        pathology_columns=config.PATHOLOGY_COLUMNS,
-        target_spacing_xyz=config.TARGET_SPACING,
-        target_shape_dhw=config.TARGET_SHAPE_DHW,
-        clip_hu_min=config.CLIP_HU_MIN,
-        clip_hu_max=config.CLIP_HU_MAX,
-        use_cache=config.USE_CACHE,
-        cache_dir=config.CACHE_DIR,
-        augment=False, # Disable augmentation for validation dataset.
-        orientation_axcodes=config.ORIENTATION_AXCODES # Pass orientation config
+        img_dir=config.paths.valid_img_dir,
+        pathology_columns=config.pathologies.columns,
+        target_spacing_xyz=np.array(config.image_processing.target_spacing), # Ensure this is a numpy array
+        target_shape_dhw=config.image_processing.target_shape_dhw,
+        clip_hu_min=config.image_processing.clip_hu_min,
+        clip_hu_max=config.image_processing.clip_hu_max,
+        use_cache=config.cache.use_cache,
+        cache_dir=config.paths.cache_dir,
+        augment=False,
+        orientation_axcodes=config.image_processing.orientation_axcodes
     )
-    # Create DataLoaders.
+
     train_loader = DataLoader(
-        train_dataset, batch_size=config.BATCH_SIZE, shuffle=True,
-        num_workers=config.NUM_WORKERS, pin_memory=config.PIN_MEMORY,
-        persistent_workers=config.NUM_WORKERS > 0 # Keep workers alive if num_workers > 0.
+        train_dataset, batch_size=config.training.batch_size, shuffle=True,
+        num_workers=config.training.num_workers, pin_memory=config.training.pin_memory,
+        persistent_workers=config.training.num_workers > 0
     )
     valid_loader = DataLoader(
-        valid_dataset, batch_size=config.BATCH_SIZE, shuffle=False,
-        num_workers=config.NUM_WORKERS, pin_memory=config.PIN_MEMORY,
-        persistent_workers=config.NUM_WORKERS > 0 # Keep workers alive if num_workers > 0.
+        valid_dataset, batch_size=config.training.batch_size, shuffle=False,
+        num_workers=config.training.num_workers, pin_memory=config.training.pin_memory,
+        persistent_workers=config.training.num_workers > 0
     )
 
     # Create model and move to device.
@@ -437,13 +414,13 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
             logger.error(f"Error during wandb.watch(): {e}")
 
     # Initialize loss criterion based on configuration.
-    if config.LOSS_FUNCTION == "FocalLoss":
-        criterion = FocalLoss(alpha=config.FOCAL_LOSS_ALPHA, gamma=config.FOCAL_LOSS_GAMMA)
-        logger.info(f"Using FocalLoss with alpha={config.FOCAL_LOSS_ALPHA}, gamma={config.FOCAL_LOSS_GAMMA}")
-    elif config.LOSS_FUNCTION == "BCEWithLogitsLoss":
+    if config.loss_function.type == "FocalLoss":
+        criterion = FocalLoss(alpha=config.loss_function.focal_loss.alpha, gamma=config.loss_function.focal_loss.gamma)
+        logger.info(f"Using FocalLoss with alpha={config.loss_function.focal_loss.alpha}, gamma={config.loss_function.focal_loss.gamma}")
+    elif config.loss_function.type == "BCEWithLogitsLoss":
         # Calculate positive class weights for BCEWithLogitsLoss.
         pos_weights = []
-        for col in config.PATHOLOGY_COLUMNS:
+        for col in config.pathologies.columns:
             pos_count = train_df[col].sum()
             neg_count = len(train_df) - pos_count
             weight = neg_count / (pos_count + 1e-6) # Epsilon to prevent division by zero.
@@ -457,11 +434,11 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
 
     # Initialize optimizer.
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
+        model.parameters(), lr=config.training.learning_rate, weight_decay=config.training.weight_decay
     )
     # Initialize GradScaler for mixed precision if enabled.
     scaler = None
-    if config.MIXED_PRECISION:
+    if config.optimization.mixed_precision:
         scaler = torch.cuda.amp.GradScaler()
 
     # Initialize training state variables.
@@ -471,16 +448,16 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
     history = {'train_loss': [], 'valid_loss': [], 'metrics': []}
 
     # Resume from checkpoint if specified and checkpoint exists.
-    if config.RESUME_FROM_CHECKPOINT and Path(config.RESUME_FROM_CHECKPOINT).exists():
-        logger.info(f"Resuming from checkpoint: {config.RESUME_FROM_CHECKPOINT}")
+    if config.training.resume_from_checkpoint and Path(config.training.resume_from_checkpoint).exists():
+        logger.info(f"Resuming from checkpoint: {config.training.resume_from_checkpoint}")
         try:
             # Load checkpoint.
             checkpoint_epoch, checkpoint_metrics_loaded = load_checkpoint(
-                config.RESUME_FROM_CHECKPOINT, model, optimizer, scaler
+                config.training.resume_from_checkpoint, model, optimizer, scaler
             )
             start_epoch = checkpoint_epoch + 1 # Set start epoch for training loop.
             # Load training history if available.
-            history_path = config.OUTPUT_DIR / 'training_history.json'
+            history_path = config.paths.output_dir / 'training_history.json'
             if history_path.exists():
                 with open(history_path, 'r') as f: history = json.load(f)
                 # Truncate history to the loaded checkpoint's epoch.
@@ -506,14 +483,14 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
 
     # Initialize learning rate scheduler.
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=config.NUM_EPOCHS - start_epoch, eta_min=1e-6
+        optimizer, T_max=config.training.num_epochs - start_epoch, eta_min=1e-6
     )
     # Advance scheduler state to the starting epoch when resuming.
     for _ in range(start_epoch):
          if scheduler: scheduler.step()
 
     # Initialize early stopping mechanism.
-    early_stopping = EarlyStopping(patience=config.EARLY_STOPPING_PATIENCE, mode='max', min_delta=0.0001)
+    early_stopping = EarlyStopping(patience=config.training.early_stopping_patience, mode='max', min_delta=0.0001)
     # Set best_value for early stopping if resuming.
     if start_epoch > 0 and best_auc > 0:
         early_stopping.best_value = best_auc
@@ -523,27 +500,27 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
     metrics_for_loop: Dict[str, Any] = {}
 
     # Main training loop.
-    for epoch in range(start_epoch, config.NUM_EPOCHS):
+    for epoch in range(start_epoch, config.training.num_epochs):
         epoch_start_time = time.time()
         # Train for one epoch.
         train_loss = train_epoch(
             model, train_loader, criterion, optimizer, scaler, device,
-            epoch, config.NUM_EPOCHS, config.GRADIENT_ACCUMULATION_STEPS,
-            config.MIXED_PRECISION, config.USE_BF16
+            epoch, config.training.num_epochs, config.training.gradient_accumulation_steps,
+            config.optimization.mixed_precision, config.optimization.use_bf16
         )
         # Validate for one epoch.
         valid_loss, predictions, labels = validate_epoch(
             model, valid_loader, criterion, device
         )
         # Compute validation metrics.
-        metrics_for_loop = compute_metrics(predictions, labels, config.PATHOLOGY_COLUMNS)
+        metrics_for_loop = compute_metrics(predictions, labels, config.pathologies.columns)
 
         # Step the learning rate scheduler.
         if scheduler:
             scheduler.step()
 
         epoch_time = time.time() - epoch_start_time
-        logger.info(f"\nEpoch [{epoch+1}/{config.NUM_EPOCHS}] Time: {epoch_time:.2f}s")
+        logger.info(f"\nEpoch [{epoch+1}/{config.training.num_epochs}] Time: {epoch_time:.2f}s")
         logger.info(f"Train Loss: {train_loss:.4f}, Valid Loss: {valid_loss:.4f}")
         logger.info(f"Valid AUC (macro): {metrics_for_loop['roc_auc_macro']:.4f}, F1 (macro): {metrics_for_loop['f1_macro']:.4f}")
 
@@ -566,7 +543,7 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
                 logger.error(f"Failed to log metrics to wandb: {e}")
 
         # Save training history to JSON.
-        history_path = config.OUTPUT_DIR / 'training_history.json'
+        history_path = config.paths.output_dir / 'training_history.json'
         with open(history_path, 'w') as f: json.dump(history, f, indent=2)
 
         # Check for best model based on validation ROC AUC macro.
@@ -574,7 +551,7 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
         if current_auc > best_auc:
             best_auc = current_auc
             best_epoch = epoch
-            best_model_path = config.OUTPUT_DIR / 'best_model.pth'
+            best_model_path = config.paths.output_dir / 'best_model.pth'
             save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, best_model_path)
             logger.info(f"New best model saved with AUC: {best_auc:.4f}")
             early_stopping.counter = 0 # Reset early stopping counter on improvement.
@@ -588,11 +565,11 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
 
         # Save periodic checkpoint.
         if (epoch + 1) % 5 == 0: # Save every 5 epochs.
-            checkpoint_path = config.OUTPUT_DIR / f'checkpoint_epoch_{epoch+1}.pth'
+            checkpoint_path = config.paths.output_dir / f'checkpoint_epoch_{epoch+1}.pth'
             save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, checkpoint_path)
 
         # Save last checkpoint.
-        last_checkpoint_path = config.OUTPUT_DIR / 'last_checkpoint.pth'
+        last_checkpoint_path = config.paths.output_dir / 'last_checkpoint.pth'
         save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, last_checkpoint_path)
         logger.info(f"Saved checkpoint at epoch {epoch+1}")
 
@@ -606,13 +583,13 @@ def train_model(config: Config) -> Tuple[nn.Module, Dict[str, Any]]:
         final_metrics_to_save = {}
 
     # Save the final model state.
-    final_model_path = config.OUTPUT_DIR / 'final_model.pth'
+    final_model_path = config.paths.output_dir / 'final_model.pth'
     # Determine the epoch number for the final save.
     last_trained_epoch = epoch if 'epoch' in locals() else start_epoch -1
     save_checkpoint(model, optimizer, scaler, last_trained_epoch, final_metrics_to_save, final_model_path)
 
     # Save final training history.
-    history_path = config.OUTPUT_DIR / 'training_history.json'
+    history_path = config.paths.output_dir / 'training_history.json'
     with open(history_path, 'w') as f: json.dump(history, f, indent=2)
 
     logger.info(f"\nTraining completed!")
