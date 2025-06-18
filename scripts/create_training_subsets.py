@@ -30,7 +30,8 @@ def create_training_subsets(
     The stratification is performed based on the disease classes defined in the
     project configuration to ensure that the distribution of diseases is
     preserved in the subsets. Subsets are nested, meaning smaller percentage
-    subsets are created from larger ones.
+    subsets are created from larger ones. This function includes robust
+    handling for rare classes with single samples to prevent crashing.
 
     Args:
         config: The loaded configuration object.
@@ -91,12 +92,40 @@ def create_training_subsets(
         # Calculate the proportion to split from the current dataframe
         split_ratio = frac / current_fraction
 
+        # --- Handle Singleton Classes for Stratification ---
+        # This logic prevents crashes when a class has only one sample.
+        stratify_for_split = df_current["stratify_key"].copy()
+        class_counts = stratify_for_split.value_counts()
+        rare_classes = class_counts[class_counts < 2].index
+
+        stratify_argument = stratify_for_split
+        # If there are any classes with only one member, group them.
+        if not rare_classes.empty:
+            logger.warning(
+                f"Found {len(rare_classes)} class(es) with only 1 sample. "
+                "Grouping them into a '_RARE_' category for this split."
+            )
+            is_rare = stratify_for_split.isin(rare_classes)
+            stratify_for_split.loc[is_rare] = '_RARE_'
+
+            # If the new '_RARE_' group itself has < 2 members, stratification
+            # is impossible. Fall back to a non-stratified split for this step.
+            if stratify_for_split.value_counts().get('_RARE_') < 2:
+                logger.error(
+                    "Cannot stratify: rare class group has fewer than 2 members. "
+                    "Falling back to a non-stratified split for this step. "
+                    "Distribution may be slightly skewed."
+                )
+                stratify_argument = None
+            else:
+                stratify_argument = stratify_for_split
+
         # The 'test' set from the split becomes our new, smaller subset
         _, df_subset = train_test_split(
             df_current,
             test_size=split_ratio,
             random_state=seed,
-            stratify=df_current["stratify_key"],
+            stratify=stratify_argument,
         )
 
         subsets[frac] = df_subset
@@ -116,7 +145,7 @@ def create_training_subsets(
         # Remove the temporary stratification key before saving
         df_to_save = df_subset.drop(columns=["stratify_key"])
         df_to_save.to_csv(output_path, index=False)
-        logger.info(f"  - Saved {output_path} (size: {len(df_to_save)})")
+        logger.info(f"   - Saved {output_path} (size: {len(df_to_save)})")
 
     # --- Verification of Disease Distribution ---
     logger.info("\n--- Verifying Disease Distribution ---")
@@ -136,22 +165,24 @@ def create_training_subsets(
 
     if fractions:
         smallest_frac = min(fractions)
-        smallest_subset_dist = subsets[smallest_frac][disease_cols].mean()
-        diff = (original_dist - smallest_subset_dist).abs().sum()
+        if smallest_frac in subsets:
+            smallest_subset_dist = subsets[smallest_frac][disease_cols].mean()
+            diff = (original_dist - smallest_subset_dist).abs().sum()
 
-        logger.info(
-            "\nAbsolute sum of differences in distribution between original and "
-            "%d%% subset: %.4f",
-            int(smallest_frac * 100),
-            diff,
-        )
-        if diff < 0.1:  # A small threshold for acceptable difference
-            logger.info("Stratification appears to be working correctly.")
-        else:
-            logger.warning(
-                "Large difference in distribution detected. "
-                "Stratification might not be optimal."
+            logger.info(
+                "\nAbsolute sum of differences in distribution between original and "
+                "%d%% subset: %.4f",
+                int(smallest_frac * 100),
+                diff,
             )
+            # A small threshold for acceptable difference
+            if diff < 0.1:
+                logger.info("Stratification appears to be working correctly.")
+            else:
+                logger.warning(
+                    "Large difference in distribution detected. "
+                    "Stratification might not be optimal."
+                )
 
 
 def main():
