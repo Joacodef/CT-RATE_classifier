@@ -65,30 +65,15 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
             config.paths.labels.train = path_train_50
         # else: use the full path already in config
 
-    # --- Hyperparameter Search Space Definition ---
-    config.training.learning_rate = trial.suggest_float(
-        "learning_rate", 1e-5, 1e-3, log=True
-    )
-    config.training.weight_decay = trial.suggest_float(
-        "weight_decay", 1e-6, 1e-2, log=True
-    )
-    config.training.batch_size = trial.suggest_categorical("batch_size", [2, 4, 8])
-
-    config.model.type = trial.suggest_categorical(
-        "model_type", ["resnet3d", "densenet3d", "vit3d"]
-    )
     if config.model.type == "resnet3d":
-        config.model.variant = trial.suggest_categorical(
-            "model_variant", ["18", "34"]
-        )
+        variant = trial.suggest_categorical("resnet3d_variant", ["18", "34"])
+        config.model.variant = variant
     elif config.model.type == "densenet3d":
-        config.model.variant = trial.suggest_categorical(
-            "model_variant", ["121", "169"]
-        )
-    else: # vit3d
-        config.model.variant = trial.suggest_categorical(
-            "model_variant", ["tiny", "small", "base"]
-        )
+        variant = trial.suggest_categorical("densenet3d_variant", ["121", "169"])
+        config.model.variant = variant
+    else:  # vit3d
+        variant = trial.suggest_categorical("vit3d_variant", ["tiny", "small", "base"])
+        config.model.variant = variant
 
     if config.loss_function.type == "FocalLoss":
         config.loss_function.focal_loss.alpha = trial.suggest_float(
@@ -108,7 +93,7 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
     config.paths.output_dir = trial_output_dir
 
     log_file = trial_output_dir / f"trial_{trial_num}.log"
-    setup_logging(log_file_path=log_file)
+    setup_logging(log_file=log_file)
 
     logger.info(
         f"Starting trial {trial_num} with training data: "
@@ -116,8 +101,25 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
     )
     logger.info(f"Parameters: {trial.params}")
 
+
+    def pruning_callback(epoch: int, metrics: dict):
+        """
+        Optuna callback to report metrics and handle pruning.
+        Args:
+            epoch (int): The current epoch number.
+            metrics (dict): A dictionary containing validation metrics.
+        """
+        # The metric to be optimized, as reported by the trainer.
+        validation_metric = metrics.get("roc_auc_macro", 0.0)
+        trial.report(validation_metric, epoch)
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
+
     try:
-        _, history = train_model(config=config)
+        # Pass the callback to the training function
+        _, history = train_model(config=config, optuna_callback=pruning_callback)
+
+        # Extract the best metric from the final history
         validation_metrics = [
             m["roc_auc_macro"]
             for m in history["metrics"]
@@ -128,17 +130,25 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
             f"Trial {trial_num} finished with best metric: {best_metric:.4f}"
         )
         return best_metric
+    except optuna.exceptions.TrialPruned:
+        logger.info(f"Trial {trial_num} pruned.")
+        raise  # Re-raise the exception to let Optuna handle it
     except torch.cuda.OutOfMemoryError:
         logger.error(
             f"Trial {trial_num} failed due to CUDA Out of Memory. Pruning."
         )
+        # Prune the trial manually if an OOM error occurs
         raise optuna.exceptions.TrialPruned()
     except Exception as e:
         logger.error(
             f"Trial {trial_num} failed with an unexpected error: {e}",
             exc_info=True,
         )
+        # Return a poor value to discourage this parameter set
         return 0.0
+    
+
+
 
 
 def main():
@@ -191,17 +201,49 @@ def main():
         default=90,
         help="Run trials up to this number on 50% of the data.",
     )
+    parser.add_argument(
+        "--pruner",
+        type=str,
+        default="none",
+        choices=["median", "hyperband", "none"],
+        help="Optuna pruner to use for early stopping of unpromising trials.",
+    )
     args = parser.parse_args()
 
     # Load the base configuration from the specified YAML file
     base_config = load_config(args.config)
 
-    storage_name = f"sqlite:///{args.storage_db}"
+    pruner = None
+    if args.pruner == "median":
+        pruner = optuna.pruners.MedianPruner(
+            n_startup_trials=5, n_warmup_steps=3, interval_steps=1
+        )
+        logger.info("Using MedianPruner.")
+    elif args.pruner == "hyperband":
+        pruner = optuna.pruners.HyperbandPruner(
+            min_resource=1, max_resource=base_config.training.epochs, reduction_factor=3
+        )
+        logger.info("Using HyperbandPruner.")
+    else:
+        # Defaults to NopPruner if 'none' or not specified
+        pruner = optuna.pruners.NopPruner()
+        logger.info("No pruner selected (NopPruner).")
+
+    # --- Storage Setup ---
+    # Construct an absolute path for the storage database to ensure it is
+    # created in a predictable, writable location.
+    output_dir = Path(base_config.paths.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    storage_path = output_dir / args.storage_db
+    storage_name = f"sqlite:///{storage_path.resolve()}"
+
+    # --- Study Creation ---
     study = optuna.create_study(
         direction="maximize",
         study_name=args.study_name,
         storage=storage_name,
         load_if_exists=True,
+        pruner=pruner,
     )
 
     # Pass the loaded base_config and command-line args to the objective function

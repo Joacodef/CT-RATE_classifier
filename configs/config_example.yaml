@@ -63,7 +63,7 @@ training:
   gradient_accumulation_steps: 4
   learning_rate: 1.0e-4
   weight_decay: 0.01
-  num_workers: 8
+  num_workers: 0
   pin_memory: true
   early_stopping_patience: 5
   resume_from_checkpoint: null # Set to a path like 'path/to/checkpoint.pth' to resume

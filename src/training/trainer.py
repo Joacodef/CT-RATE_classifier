@@ -5,7 +5,7 @@ import time
 import json
 import logging
 from pathlib import Path
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional, Callable
 from types import SimpleNamespace
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -285,9 +285,12 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Modul
     return avg_loss, all_predictions_np, all_labels_np
 
 
-def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
+def train_model(
+    config: SimpleNamespace,
+    device: Optional[torch.device] = None,
+    optuna_callback: Optional[Callable[[int, Dict[str, Any]], None]] = None,
+) -> Tuple[nn.Module, Dict[str, Any]]:
     """Main function to train the CT classification model.
-
     This function orchestrates the entire training process, including:
     - Setting up PyTorch optimizations and device.
     - Initializing Weights & Biases (wandb) for experiment tracking.
@@ -300,62 +303,71 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
     - Saving model checkpoints (best, last, and periodic).
     - Logging metrics to console and wandb.
     - Generating a final training report.
-
     Args:
-        config: A Config object containing all hyperparameters and settings for training.
-
+        config: A Config object containing all hyperparameters and settings.
+        device (Optional[torch.device]): The device to train on. If None, it
+            will be automatically detected (CUDA or CPU).
+        optuna_callback (Optional[Callable]): An optional callback for Optuna
+            pruning, which takes the epoch and validation metrics as input.
     Returns:
         A tuple containing:
             - model (nn.Module): The trained PyTorch model.
             - history (Dict[str, Any]): A dictionary containing training history
               (losses and metrics per epoch).
     """
-    setup_torch_optimizations() # Apply PyTorch performance optimizations.
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    setup_torch_optimizations()  # Apply PyTorch performance optimizations.
+    
+    # Use the provided device or detect automatically.
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    wandb_run = None # Initialize wandb run object.
-    try:
-        # Configuration payload for wandb.
-        wandb_config_payload = {
-            "learning_rate": config.training.learning_rate,
-            "architecture": config.model.type,
-            "model_variant": config.model.variant,
-            "loss_function": config.loss_function.type,
-            "focal_loss_alpha": config.loss_function.focal_loss.alpha,
-            "focal_loss_gamma": config.loss_function.focal_loss.gamma,
-            "target_shape_dhw": config.image_processing.target_shape_dhw,
-            "target_spacing": config.image_processing.target_spacing,
-            "clip_hu_min": config.image_processing.clip_hu_min,
-            "clip_hu_max": config.image_processing.clip_hu_max,
-            "orientation_axcodes": config.image_processing.orientation_axcodes,
-            "epochs": config.training.num_epochs,
-            "batch_size": config.training.batch_size,
-            "gradient_accumulation_steps": config.training.gradient_accumulation_steps,
-            "weight_decay": config.training.weight_decay,
-            "num_workers": config.training.num_workers,
-            "pin_memory": config.training.pin_memory,
-            "gradient_checkpointing": config.optimization.gradient_checkpointing,
-            "mixed_precision": config.optimization.mixed_precision,
-            "use_bf16": config.optimization.use_bf16,
-            "early_stopping_patience": config.training.early_stopping_patience,
-            "use_cache": config.cache.use_cache,
-            "num_pathologies": len(config.pathologies.columns),
-            "pathology_columns": config.pathologies.columns,
-            "output_dir": str(config.paths.output_dir),
-            "resume_from_checkpoint": str(config.training.resume_from_checkpoint) if config.training.resume_from_checkpoint else None,
-        }
-        # Initialize Weights & Biases run.
-        wandb_run = wandb.init(
-            project="ct_classifier", # Project name in wandb.
-            config=wandb_config_payload, # Pass configuration to wandb.
-            dir=str(config.paths.output_dir) # Specify directory for wandb files.
-        )
-        logger.info(f"Weights & Biases initialized successfully. Run name: {wandb_run.name}")
+    wandb_run = None  # Initialize wandb run object.
+    # Check for the presence of wandb config and if it's enabled.
+    if hasattr(config, "wandb") and config.wandb.enabled:
+        try:
+            # Configuration payload for wandb.
+            wandb_config_payload = {
+                "learning_rate": config.training.learning_rate,
+                "architecture": config.model.type,
+                "model_variant": config.model.variant,
+                "loss_function": config.loss_function.type,
+                "focal_loss_alpha": config.loss_function.focal_loss.alpha,
+                "focal_loss_gamma": config.loss_function.focal_loss.gamma,
+                "target_shape_dhw": config.image_processing.target_shape_dhw,
+                "target_spacing": config.image_processing.target_spacing,
+                "clip_hu_min": config.image_processing.clip_hu_min,
+                "clip_hu_max": config.image_processing.clip_hu_max,
+                "orientation_axcodes": config.image_processing.orientation_axcodes,
+                "epochs": config.training.num_epochs,
+                "batch_size": config.training.batch_size,
+                "gradient_accumulation_steps": config.training.gradient_accumulation_steps,
+                "weight_decay": config.training.weight_decay,
+                "num_workers": config.training.num_workers,
+                "pin_memory": config.training.pin_memory,
+                "gradient_checkpointing": config.optimization.gradient_checkpointing,
+                "mixed_precision": config.optimization.mixed_precision,
+                "use_bf16": config.optimization.use_bf16,
+                "early_stopping_patience": config.training.early_stopping_patience,
+                "use_cache": config.cache.use_cache,
+                "num_pathologies": len(config.pathologies.columns),
+                "pathology_columns": config.pathologies.columns,
+                "output_dir": str(config.paths.output_dir),
+                "resume_from_checkpoint": str(config.training.resume_from_checkpoint) if config.training.resume_from_checkpoint else None,
+            }
+            # Initialize Weights & Biases run.
+            wandb_run = wandb.init(
+                project=config.wandb.project, # Project name in wandb.
+                config=wandb_config_payload,  # Pass configuration to wandb.
+                dir=str(config.paths.output_dir), # Specify directory for wandb files.
+                name=config.wandb.run_name,
+                resume=config.wandb.resume,
+            )
+            logger.info(f"Weights & Biases initialized successfully. Run name: {wandb_run.name}")
 
-    except Exception as e:
-        # Log error if wandb initialization fails.
-        logger.error(f"Failed to initialize Weights & Biases: {e}. Training will continue without wandb logging.")
+        except Exception as e:
+            # Log error if wandb initialization fails.
+            logger.error(f"Failed to initialize Weights & Biases: {e}. Training will continue without wandb logging.")
 
     # Ensure output directory exists.
     config.paths.output_dir.mkdir(parents=True, exist_ok=True)
@@ -367,9 +379,9 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
 
     train_dataset = CTDataset3D(
         dataframe=train_df,
-        img_dir=config.paths.train_img_dir,
+        img_dir=config.paths.data_dir, # Use generic data_dir
         pathology_columns=config.pathologies.columns,
-        target_spacing_xyz=np.array(config.image_processing.target_spacing), # Ensure this is a numpy array
+        target_spacing_xyz=np.array(config.image_processing.target_spacing),
         target_shape_dhw=config.image_processing.target_shape_dhw,
         clip_hu_min=config.image_processing.clip_hu_min,
         clip_hu_max=config.image_processing.clip_hu_max,
@@ -377,14 +389,12 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
         cache_dir=config.paths.cache_dir,
         augment=True,
         orientation_axcodes=config.image_processing.orientation_axcodes,
-        path_mode = config.paths.dir_structure # Pass directory structure mode to dataset
-        
     )
     valid_dataset = CTDataset3D(
         dataframe=valid_df,
-        img_dir=config.paths.valid_img_dir,
+        img_dir=config.paths.data_dir, # Use generic data_dir
         pathology_columns=config.pathologies.columns,
-        target_spacing_xyz=np.array(config.image_processing.target_spacing), # Ensure this is a numpy array
+        target_spacing_xyz=np.array(config.image_processing.target_spacing),
         target_shape_dhw=config.image_processing.target_shape_dhw,
         clip_hu_min=config.image_processing.clip_hu_min,
         clip_hu_max=config.image_processing.clip_hu_max,
@@ -392,7 +402,6 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
         cache_dir=config.paths.cache_dir,
         augment=False,
         orientation_axcodes=config.image_processing.orientation_axcodes,
-        path_mode = config.paths.dir_structure # Pass directory structure mode to dataset
     )
 
     train_loader = DataLoader(
@@ -412,7 +421,7 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
     # Watch model with wandb if initialized.
     if wandb_run:
         try:
-            wandb.watch(model, log="gradients", log_freq=100) # Log gradients every 100 batches.
+            wandb.watch(model, log="gradients", log_freq=100)  # Log gradients every 100 batches.
             logger.info("wandb.watch() initiated for model.")
         except Exception as e:
             logger.error(f"Error during wandb.watch(): {e}")
@@ -427,14 +436,14 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
         for col in config.pathologies.columns:
             pos_count = train_df[col].sum()
             neg_count = len(train_df) - pos_count
-            weight = neg_count / (pos_count + 1e-6) # Epsilon to prevent division by zero.
-            pos_weights.append(min(weight, 10.0)) # Cap weights.
+            weight = neg_count / (pos_count + 1e-6)  # Epsilon to prevent division by zero.
+            pos_weights.append(min(weight, 10.0))  # Cap weights.
         pos_weight_tensor = torch.tensor(pos_weights, device=device)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
         logger.info("Using BCEWithLogitsLoss with calculated pos_weight.")
     else:
         # Raise error for unsupported loss functions.
-        raise ValueError(f"Unsupported loss function: {config.LOSS_FUNCTION}")
+        raise ValueError(f"Unsupported loss function: {config.loss_function.type}")
 
     # Initialize optimizer.
     optimizer = torch.optim.AdamW(
@@ -448,8 +457,8 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
     # Initialize training state variables.
     start_epoch = 0
     best_auc = 0.0
-    best_epoch = 0
     history = {'train_loss': [], 'valid_loss': [], 'metrics': []}
+    checkpoint_metrics_loaded = {}
 
     # Resume from checkpoint if specified and checkpoint exists.
     if config.training.resume_from_checkpoint and Path(config.training.resume_from_checkpoint).exists():
@@ -459,39 +468,38 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
             checkpoint_epoch, checkpoint_metrics_loaded = load_checkpoint(
                 config.training.resume_from_checkpoint, model, optimizer, scaler
             )
-            start_epoch = checkpoint_epoch + 1 # Set start epoch for training loop.
+            start_epoch = checkpoint_epoch + 1  # Set start epoch for training loop.
+            best_auc = checkpoint_metrics_loaded.get('roc_auc_macro', 0.0)
+            
             # Load training history if available.
-            history_path = config.paths.output_dir / 'training_history.json'
+            history_path = Path(config.training.resume_from_checkpoint).parent / 'training_history.json'
             if history_path.exists():
-                with open(history_path, 'r') as f: history = json.load(f)
+                with open(history_path, 'r') as f:
+                    history = json.load(f)
                 # Truncate history to the loaded checkpoint's epoch.
-                if len(history['train_loss']) > checkpoint_epoch + 1:
-                    history['train_loss'] = history['train_loss'][:checkpoint_epoch + 1]
-                    history['valid_loss'] = history['valid_loss'][:checkpoint_epoch + 1]
-                    history['metrics'] = history['metrics'][:checkpoint_epoch + 1]
-                # Restore best AUC and epoch from history.
-                if history['metrics']:
-                    for i, metrics_item in enumerate(history['metrics']):
-                        if 'roc_auc_macro' in metrics_item and metrics_item['roc_auc_macro'] > best_auc:
-                            best_auc = metrics_item['roc_auc_macro']
-                            best_epoch = i
-            logger.info(f"Resumed from epoch {checkpoint_epoch + 1}")
-            logger.info(f"Best AUC so far: {best_auc:.4f} at epoch {best_epoch + 1}")
+                history['train_loss'] = history['train_loss'][:start_epoch]
+                history['valid_loss'] = history['valid_loss'][:start_epoch]
+                history['metrics'] = history['metrics'][:start_epoch]
+
+            logger.info(f"Resumed from epoch {start_epoch}")
+            logger.info(f"Best AUC from loaded checkpoint: {best_auc:.4f}")
         except Exception as e:
             # Handle errors during checkpoint loading.
-            logger.error(f"Error loading checkpoint: {e}")
+            logger.error(f"Error loading checkpoint: {e}", exc_info=True)
             logger.info("Starting training from scratch")
             start_epoch = 0
             best_auc = 0.0
-            best_epoch = 0
+            history = {'train_loss': [], 'valid_loss': [], 'metrics': []}
+
 
     # Initialize learning rate scheduler.
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=config.training.num_epochs - start_epoch, eta_min=1e-6
     )
     # Advance scheduler state to the starting epoch when resuming.
-    for _ in range(start_epoch):
-         if scheduler: scheduler.step()
+    if start_epoch > 0:
+        for _ in range(start_epoch):
+            if scheduler: scheduler.step()
 
     # Initialize early stopping mechanism.
     early_stopping = EarlyStopping(patience=config.training.early_stopping_patience, mode='max', min_delta=0.0001)
@@ -500,8 +508,6 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
         early_stopping.best_value = best_auc
 
     logger.info(f"Starting training from epoch {start_epoch + 1}...")
-    # Dictionary to store metrics from the latest completed epoch.
-    metrics_for_loop: Dict[str, Any] = {}
 
     # Main training loop.
     for epoch in range(start_epoch, config.training.num_epochs):
@@ -510,7 +516,6 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
         train_loss = train_epoch(
             model, train_loader, criterion, optimizer, scaler, device,
             epoch, config.training.num_epochs, config.training.gradient_accumulation_steps,
-            config.optimization.mixed_precision, config.optimization.use_bf16
         )
         # Validate for one epoch.
         valid_loss, predictions, labels = validate_epoch(
@@ -518,6 +523,8 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
         )
         # Compute validation metrics.
         metrics_for_loop = compute_metrics(predictions, labels, config.pathologies.columns)
+        # Add validation loss to metrics dictionary
+        metrics_for_loop['loss'] = valid_loss
 
         # Step the learning rate scheduler.
         if scheduler:
@@ -539,7 +546,9 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
                 "valid_loss": valid_loss,
-                "val_roc_auc_macro": metrics_for_loop.get('roc_auc_macro', 0.0), # Log macro AUC
+                "val_roc_auc_macro": metrics_for_loop.get('roc_auc_macro', 0.0),
+                "val_f1_macro": metrics_for_loop.get('f1_macro', 0.0),
+                "learning_rate": optimizer.param_groups[0]['lr']
             }
             try:
                 wandb_run.log(log_payload)
@@ -554,41 +563,31 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
         current_auc = metrics_for_loop.get('roc_auc_macro', 0.0)
         if current_auc > best_auc:
             best_auc = current_auc
-            best_epoch = epoch
             best_model_path = config.paths.output_dir / 'best_model.pth'
             save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, best_model_path)
             logger.info(f"New best model saved with AUC: {best_auc:.4f}")
-            early_stopping.counter = 0 # Reset early stopping counter on improvement.
-        else:
-            early_stopping.counter +=1 # Increment counter if no improvement.
-
+        
         # Check for early stopping.
         if early_stopping(current_auc):
             logger.info(f"Early stopping triggered at epoch {epoch+1}")
-            break # Exit training loop.
-
-        # Save periodic checkpoint.
-        if (epoch + 1) % 5 == 0: # Save every 5 epochs.
-            checkpoint_path = config.paths.output_dir / f'checkpoint_epoch_{epoch+1}.pth'
-            save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, checkpoint_path)
-
+            break  # Exit training loop.
+            
         # Save last checkpoint.
         last_checkpoint_path = config.paths.output_dir / 'last_checkpoint.pth'
         save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, last_checkpoint_path)
-        logger.info(f"Saved checkpoint at epoch {epoch+1}")
+
+
+        # If an Optuna callback is provided, execute it with the latest
+        # validation metrics. The callback itself should handle raising
+        # the TrialPruned exception if necessary.
+        if optuna_callback:
+            optuna_callback(epoch, metrics_for_loop)
 
     # Determine metrics for saving the final model.
-    final_metrics_to_save = metrics_for_loop
-    # If resuming and training loop did not run, use metrics from loaded checkpoint if available.
-    if not final_metrics_to_save and 'checkpoint_metrics_loaded' in locals() and checkpoint_metrics_loaded:
-        final_metrics_to_save = checkpoint_metrics_loaded
-    # Initialize to an empty dictionary if no metrics are available.
-    elif not final_metrics_to_save:
-        final_metrics_to_save = {}
+    final_metrics_to_save = history['metrics'][-1] if history['metrics'] else {}
 
     # Save the final model state.
     final_model_path = config.paths.output_dir / 'final_model.pth'
-    # Determine the epoch number for the final save.
     last_trained_epoch = epoch if 'epoch' in locals() else start_epoch -1
     save_checkpoint(model, optimizer, scaler, last_trained_epoch, final_metrics_to_save, final_model_path)
 
@@ -597,9 +596,10 @@ def train_model(config: SimpleNamespace) -> Tuple[nn.Module, Dict[str, Any]]:
     with open(history_path, 'w') as f: json.dump(history, f, indent=2)
 
     logger.info(f"\nTraining completed!")
-    logger.info(f"Best model: Epoch {best_epoch+1} with AUC {best_auc:.4f}")
-    # Generate final report if training history is not empty.
-    if history['train_loss']:
+    if history['metrics']:
+        best_epoch_idx = np.argmax([m.get('roc_auc_macro', 0.0) for m in history['metrics']])
+        best_auc_final = history['metrics'][best_epoch_idx].get('roc_auc_macro', 0.0)
+        logger.info(f"Best model: Epoch {history.get('metrics')[best_epoch_idx].get('epoch', best_epoch_idx)+1} with AUC {best_auc_final:.4f}")
         generate_final_report(history, config)
     else:
         logger.warning("Training history is empty. Skipping final report generation.")
