@@ -29,15 +29,12 @@ from scripts.train import main as train_main
 def test_environment(tmp_path, monkeypatch):
     """
     Sets up a complete temporary environment for a test run.
-
     This fixture creates a temporary directory structure, mock data files (CSVs, NIfTI),
     a YAML configuration file, and sets necessary environment variables to simulate
     a realistic execution context for the training script.
-
     Args:
         tmp_path (Path): The pytest-provided temporary path.
         monkeypatch: The pytest fixture for modifying classes, methods, etc.
-
     Yields:
         dict: A dictionary of key paths and directories for use in tests.
     """
@@ -48,29 +45,31 @@ def test_environment(tmp_path, monkeypatch):
     valid_img_dir = data_dir / "valid_images"
     output_dir = project_root / "test_output"
     cache_dir = project_root / "test_cache"
-    generated_subsets_dir = data_dir / "generated_subsets"
-    labels_dir = data_dir / "dataset/multi_abnormality_labels"
-
+    
+    # Correct directory structure based on config_example.yaml
+    splits_dir = data_dir / "splits" / "tiny_split"
+    labels_dir = data_dir / "labels" / "multi_abnormality_labels"
+    
     for d in [
         train_img_dir,
         valid_img_dir,
         output_dir,
         cache_dir,
-        generated_subsets_dir,
+        splits_dir,
         labels_dir,
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
-    # 2. Create dummy data files
+    # 2. Create dummy data files with correct paths
     pathologies = ["Cardiomegaly", "Atelectasis"]
 
+    # These files now match the paths in the YAML config
     pd.DataFrame({"VolumeName": ["train_vol1.nii.gz"]}).to_csv(
-        generated_subsets_dir / "selected_train_volumes.csv", index=False
+        splits_dir / "train.csv", index=False
     )
     pd.DataFrame({"VolumeName": ["valid_vol1.nii.gz"]}).to_csv(
-        generated_subsets_dir / "selected_valid_volumes.csv", index=False
+        splits_dir / "valid.csv", index=False
     )
-
     pd.DataFrame(
         {"VolumeName": ["train_vol1.nii.gz"], "Cardiomegaly": [1], "Atelectasis": [0]}
     ).to_csv(labels_dir / "train_predicted_labels.csv", index=False)
@@ -88,6 +87,7 @@ def test_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("TRAIN_IMG_DIR", str(train_img_dir))
     monkeypatch.setenv("VALID_IMG_DIR", str(valid_img_dir))
     monkeypatch.setenv("CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
 
     # 4. Create YAML config file
     config_data = {
@@ -96,13 +96,23 @@ def test_environment(tmp_path, monkeypatch):
             "valid_img_dir": "${VALID_IMG_DIR}",
             "base_project_dir": str(project_root),
             "cache_dir": "${CACHE_DIR}",
+            "data_dir": "${DATA_DIR}",
+            "dir_structure": "flat",
             "data_subsets": {
-                "selected_train_volumes": "test_data/generated_subsets/selected_train_volumes.csv",
-                "selected_valid_volumes": "test_data/generated_subsets/selected_valid_volumes.csv",
+                "train": "splits/tiny_split/train.csv",
+                "valid": "splits/tiny_split/valid.csv",
             },
             "labels": {
-                "train": "test_data/dataset/multi_abnormality_labels/train_predicted_labels.csv",
-                "valid": "test_data/dataset/multi_abnormality_labels/valid_predicted_labels.csv",
+                "train": "labels/multi_abnormality_labels/train_predicted_labels.csv",
+                "valid": "labels/multi_abnormality_labels/valid_predicted_labels.csv",
+            },
+            "reports": {
+                "train": "radiology_text_reports/train_report.csv",
+                "valid": "radiology_text_reports/valid_report.csv",
+            },
+            "metadata": {
+                "train": "metadata/train_metadata.csv",
+                "valid": "metadata/valid_metadata.csv",
             },
             "output_dir": str(output_dir),
         },

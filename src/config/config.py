@@ -87,6 +87,8 @@ def load_config(config_path: str | Path) -> SimpleNamespace:
     cfg.paths.valid_img_dir = Path(cfg.paths.valid_img_dir).resolve()
     cfg.paths.cache_dir = Path(cfg.paths.cache_dir).resolve()
 
+    cfg.paths.output_dir = Path(cfg.paths.output_dir).resolve()
+
     data_dir = Path(cfg.paths.data_dir).resolve()
     cfg.paths.data_dir = data_dir
 
