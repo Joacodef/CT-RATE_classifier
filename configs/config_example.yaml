@@ -57,6 +57,7 @@ loss_function:
 
 # --- Training Parameters ---
 training:
+  seed: 42
   num_epochs: 30
   batch_size: 4
   gradient_accumulation_steps: 4

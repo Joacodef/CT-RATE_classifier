@@ -18,3 +18,6 @@ data/radiology_text_reports
 *.ipynb_checkpoints
 
 output/
+
+configs/*
+!configs/*example.yaml
