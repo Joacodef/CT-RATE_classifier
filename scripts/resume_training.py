@@ -2,6 +2,7 @@
 import sys
 import argparse
 from pathlib import Path
+import logging
 
 # Add the project root to the Python path to allow imports from `src`
 project_root = Path(__file__).resolve().parents[1]

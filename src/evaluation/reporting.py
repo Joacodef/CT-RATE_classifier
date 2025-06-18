@@ -60,20 +60,19 @@ def generate_final_report(history: dict, config):
     valid_losses = history['valid_loss']
     
     # Extract metrics over epochs
-    metrics_over_time = {
-        'roc_auc_macro': [],
-        'roc_auc_micro': [],
-        'f1_macro': [],
-        'f1_micro': [],
-        'accuracy': [],
-        'precision_macro': [],
-        'recall_macro': []
-    }
+    # Safely determine the best epoch
+    roc_aucs = [m.get('roc_auc_macro', 0.0) for m in history['metrics']]
+    best_epoch_idx = np.argmax(roc_aucs) if roc_aucs else 0
     
-    for epoch_metrics in history['metrics']:
-        for key in metrics_over_time:
-            if key in epoch_metrics:
-                metrics_over_time[key].append(epoch_metrics[key])
+    # Safely extract metrics over epochs, filling missing values with None
+    metrics_keys = [
+        'roc_auc_macro', 'roc_auc_micro', 'f1_macro', 'f1_micro', 
+        'accuracy', 'precision_macro', 'recall_macro'
+    ]
+    metrics_over_time = {
+        key: [epoch_metrics.get(key, None) for epoch_metrics in history['metrics']]
+        for key in metrics_keys
+    }
     
     # 1. Training and Validation Loss
     ax1 = fig.add_subplot(gs[0, 0])
@@ -82,12 +81,11 @@ def generate_final_report(history: dict, config):
     ax1.set_xlabel('Epoch', fontsize=12)
     ax1.set_ylabel('Loss', fontsize=12)
     ax1.set_title('Training Progress: Loss', fontsize=14, fontweight='bold')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
     
     # Mark best epoch
-    best_epoch_idx = np.argmax(metrics_over_time['roc_auc_macro'])
     ax1.axvline(x=best_epoch_idx + 1, color='green', linestyle='--', alpha=0.5, label=f'Best Epoch ({best_epoch_idx + 1})')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
     
     # 2. ROC AUC Scores
     ax2 = fig.add_subplot(gs[0, 1])
@@ -190,12 +188,12 @@ def generate_final_report(history: dict, config):
     summary_text = f"Best Model Summary (Epoch {best_epoch_idx + 1})\n"
     summary_text += "=" * 40 + "\n\n"
     summary_text += f"Validation Loss: {valid_losses[best_epoch_idx]:.4f}\n"
-    summary_text += f"ROC AUC (Macro): {best_metrics['roc_auc_macro']:.4f}\n"
-    summary_text += f"ROC AUC (Micro): {best_metrics['roc_auc_micro']:.4f}\n"
-    summary_text += f"F1 Score (Macro): {best_metrics['f1_macro']:.4f}\n"
-    summary_text += f"Accuracy: {best_metrics['accuracy']:.4f}\n"
-    summary_text += f"Precision (Macro): {best_metrics['precision_macro']:.4f}\n"
-    summary_text += f"Recall (Macro): {best_metrics['recall_macro']:.4f}\n"
+    summary_text += f"ROC AUC (Macro): {best_metrics.get('roc_auc_macro', 0.0):.4f}\n"
+    summary_text += f"ROC AUC (Micro): {best_metrics.get('roc_auc_micro', 0.0):.4f}\n"
+    summary_text += f"F1 Score (Macro): {best_metrics.get('f1_macro', 0.0):.4f}\n"
+    summary_text += f"Accuracy: {best_metrics.get('accuracy', 0.0):.4f}\n"
+    summary_text += f"Precision (Macro): {best_metrics.get('precision_macro', 0.0):.4f}\n"
+    summary_text += f"Recall (Macro): {best_metrics.get('recall_macro', 0.0):.4f}\n"
     
     ax7.text(0.05, 0.95, summary_text, transform=ax7.transAxes, 
              fontsize=12, verticalalignment='top', fontfamily='monospace',
@@ -213,10 +211,7 @@ def generate_final_report(history: dict, config):
         row = []
         for metric in pathology_metrics:
             key = f"{pathology}_{metric}"
-            if key in best_metrics:
-                row.append(best_metrics[key])
-            else:
-                row.append(0.0)
+            row.append(best_metrics.get(key, 0.0))
         if any(v > 0 for v in row):  # Only include pathologies with data
             performance_matrix.append(row)
             # Shorten long pathology names
@@ -309,11 +304,12 @@ def generate_csv_report(history: dict, config, best_epoch_idx: int):
     logger.info(f"Detailed metrics CSV saved to: {csv_path}")
     
     # Create summary statistics - convert everything to JSON-serializable types
+    best_metrics = history['metrics'][best_epoch_idx]
     summary_stats = {
         'Total Epochs': len(history['train_loss']),
         'Best Epoch': int(best_epoch_idx + 1),
         'Best Validation Loss': float(history['valid_loss'][best_epoch_idx]),
-        'Best ROC AUC (Macro)': float(history['metrics'][best_epoch_idx]['roc_auc_macro']),
+        'Best ROC AUC (Macro)': float(best_metrics.get('roc_auc_macro', 0.0)),
         'Final Training Loss': float(history['train_loss'][-1]),
         'Final Validation Loss': float(history['valid_loss'][-1]),
         'Training Time per Epoch (avg)': 'Not tracked',
