@@ -379,7 +379,7 @@ def train_model(
 
     train_dataset = CTDataset3D(
         dataframe=train_df,
-        img_dir=config.paths.data_dir, # Use generic data_dir
+        img_dir=config.paths.train_img_dir, # Use generic data_dir
         pathology_columns=config.pathologies.columns,
         target_spacing_xyz=np.array(config.image_processing.target_spacing),
         target_shape_dhw=config.image_processing.target_shape_dhw,
@@ -393,7 +393,7 @@ def train_model(
     )
     valid_dataset = CTDataset3D(
         dataframe=valid_df,
-        img_dir=config.paths.data_dir, # Use generic data_dir
+        img_dir=config.paths.valid_img_dir, # Use generic data_dir
         pathology_columns=config.pathologies.columns,
         target_spacing_xyz=np.array(config.image_processing.target_spacing),
         target_shape_dhw=config.image_processing.target_shape_dhw,
