@@ -76,8 +76,8 @@ optimization:
 
 # --- Image Processing Parameters ---
 image_processing:
-  target_spacing: [1.0, 1.0, 1.0]  # In mm (X, Y, Z)
-  target_shape_dhw: [96, 224, 224] # (Depth, Height, Width)
+  target_spacing: [0.75, 0.75, 1.5]  # In mm (X, Y, Z)
+  target_shape_dhw: [160, 320, 320] # (Depth, Height, Width)
   clip_hu_min: -1000
   clip_hu_max: 1000
   orientation_axcodes: "LPS"      # e.g., "LPS", "RAS"
