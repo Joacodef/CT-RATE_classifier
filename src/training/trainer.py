@@ -4,6 +4,7 @@
 import time
 import json
 import logging
+from tqdm.auto import tqdm
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional, Callable
 from types import SimpleNamespace
@@ -190,52 +191,60 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
     num_batches = len(dataloader)
     optimizer.zero_grad() # Initialize gradients to zero.
 
-    for batch_idx, batch in enumerate(dataloader):
-        # Move data to the specified device.
+    # Wrap the dataloader with tqdm for a progress bar
+    progress_bar = tqdm(
+        dataloader, 
+        desc=f"Epoch {epoch + 1}/{total_epochs} [Training]", 
+        leave=False, 
+        unit="batch"
+    )
+
+    for batch_idx, batch in enumerate(progress_bar):
+         # Move data to the specified device.
         pixel_values = batch["pixel_values"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
 
         if use_amp and scaler is not None:
-            # Determine the dtype for mixed precision based on config and hardware support.
-            amp_dtype = torch.bfloat16 if use_bf16 and torch.cuda.is_bf16_supported() else torch.float16
-            with torch.cuda.amp.autocast(dtype=amp_dtype):
+                # Determine the dtype for mixed precision based on config and hardware support.
+                amp_dtype = torch.bfloat16 if use_bf16 and torch.cuda.is_bf16_supported() else torch.float16
+                with torch.cuda.amp.autocast(dtype=amp_dtype):
+                    outputs = model(pixel_values)
+                    loss = criterion(outputs, labels)
+                    # Normalize loss for gradient accumulation.
+                    loss = loss / gradient_accumulation_steps
+        else:
+                # Standard precision forward pass.
                 outputs = model(pixel_values)
                 loss = criterion(outputs, labels)
                 # Normalize loss for gradient accumulation.
                 loss = loss / gradient_accumulation_steps
-        else:
-            # Standard precision forward pass.
-            outputs = model(pixel_values)
-            loss = criterion(outputs, labels)
-            # Normalize loss for gradient accumulation.
-            loss = loss / gradient_accumulation_steps
 
         if use_amp and scaler is not None:
-            # Scale loss and perform backward pass with AMP.
-            scaler.scale(loss).backward()
+                # Scale loss and perform backward pass with AMP.
+                scaler.scale(loss).backward()
         else:
-            # Standard precision backward pass.
-            loss.backward()
+                # Standard precision backward pass.
+                loss.backward()
 
         # Perform optimizer step after accumulating gradients.
         if (batch_idx + 1) % gradient_accumulation_steps == 0 or (batch_idx + 1) == num_batches:
-            if use_amp and scaler is not None:
-                # Unscale gradients and step optimizer with AMP.
-                scaler.step(optimizer)
-                # Update scaler for next iteration.
-                scaler.update()
-            else:
-                # Standard optimizer step.
-                optimizer.step()
-            # Reset gradients for the next accumulation cycle.
-            optimizer.zero_grad()
+                if use_amp and scaler is not None:
+                    # Unscale gradients and step optimizer with AMP.
+                    scaler.step(optimizer)
+                    # Update scaler for next iteration.
+                    scaler.update()
+                else:
+                    # Standard optimizer step.
+                    optimizer.step()
+                # Reset gradients for the next accumulation cycle.
+                optimizer.zero_grad()
 
-        total_loss += loss.item() * gradient_accumulation_steps # Accumulate un-normalized loss.
-        # Log batch-level training progress.
-        if batch_idx % 10 == 0: # Log every 10 batches.
-            logger.info(f"Epoch [{epoch+1}/{total_epochs}] "
-                       f"Batch [{batch_idx}/{num_batches}] "
-                       f"Loss: {loss.item() * gradient_accumulation_steps:.4f}") # Log un-normalized loss.
+        # We use the un-normalized loss for logging and tracking
+        unnormalized_loss = loss.item() * gradient_accumulation_steps
+        total_loss += unnormalized_loss
+        
+        # Update the progress bar description with the current batch loss
+        progress_bar.set_postfix(loss=unnormalized_loss)
 
     avg_loss = total_loss / num_batches
     return avg_loss
@@ -263,7 +272,14 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Modul
     all_predictions = []
     all_labels = []
 
-    for batch in dataloader:
+    progress_bar = tqdm(
+        dataloader, 
+        desc=f"[Validation]", 
+        leave=False, 
+        unit="batch"
+    )
+
+    for batch in progress_bar:
         # Move data to the specified device.
         pixel_values = batch["pixel_values"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
@@ -357,14 +373,14 @@ def train_model(
             }
             # Initialize Weights & Biases run.
             wandb_run = wandb.init(
-                project=config.wandb.project, # Project name in wandb.
-                config=wandb_config_payload,  # Pass configuration to wandb.
-                dir=str(config.paths.output_dir), # Specify directory for wandb files.
-                name=config.wandb.run_name,
-                resume=config.wandb.resume,
+                project=config.wandb.project,
+                config=wandb_config_payload,
+                dir=str(config.paths.output_dir),
+                name=getattr(config.wandb, 'run_name', None),
+                group=getattr(config.wandb, 'group', None),
+                resume=getattr(config.wandb, 'resume', None),
             )
-            logger.info(f"Weights & Biases initialized successfully. Run name: {wandb_run.name}")
-
+            logger.info(f"Weights & Biases initialized successfully. Run name: {wandb_run.name}, Group: {wandb_run.group}")
         except Exception as e:
             # Log error if wandb initialization fails.
             logger.error(f"Failed to initialize Weights & Biases: {e}. Training will continue without wandb logging.")
@@ -602,7 +618,7 @@ def train_model(
         best_epoch_idx = np.argmax([m.get('roc_auc_macro', 0.0) for m in history['metrics']])
         best_auc_final = history['metrics'][best_epoch_idx].get('roc_auc_macro', 0.0)
         logger.info(f"Best model: Epoch {history.get('metrics')[best_epoch_idx].get('epoch', best_epoch_idx)+1} with AUC {best_auc_final:.4f}")
-        generate_final_report(history, config)
+        generate_final_report(history, config, best_epoch_idx=best_epoch_idx)
     else:
         logger.warning("Training history is empty. Skipping final report generation.")
 

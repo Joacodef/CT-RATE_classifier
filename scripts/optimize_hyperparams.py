@@ -17,10 +17,7 @@ from src.config import load_config
 from src.training.trainer import train_model
 from src.utils.logging_config import setup_logging
 
-# Configure a basic logger for the main script
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+# Configure a logger for the main script
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +45,10 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
     path_train_20 = base_split_dir / "train_20_percent.csv"
     path_train_50 = base_split_dir / "train_50_percent.csv"
 
+    # Set path to subset file if it exists for the current stage.
+    # The trainer will use this path to filter the main training data.
+    config.paths.labels.train_subset_path = None  # Initialize to None
+
     # Fallback to full dataset if subset files do not exist
     if not all(
         [path_train_05.exists(), path_train_20.exists(), path_train_50.exists()]
@@ -57,12 +58,12 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
         )
     else:
         if trial_num < args.trials_on_5_percent:
-            config.paths.labels.train = path_train_05
+            config.paths.labels.train_subset_path = path_train_05
         elif trial_num < args.trials_on_20_percent:
-            config.paths.labels.train = path_train_20
+            config.paths.labels.train_subset_path = path_train_20
         elif trial_num < args.trials_on_50_percent:
-            config.paths.labels.train = path_train_50
-        # else: use the full path already in config
+            config.paths.labels.train_subset_path = path_train_50
+        # else: train_subset_path remains None, so full dataset is used.
 
     if config.model.type == "resnet3d":
         variant = trial.suggest_categorical("resnet3d_variant", ["18", "34"])
@@ -83,23 +84,42 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
         )
 
     # --- Trial-specific Configuration ---
-    # Disable W&B logging for optimization trials
-    if hasattr(config, 'wandb'):
-        config.wandb.enabled = False
+    # Configure W&B for this trial, enabling grouped runs
+    if hasattr(config, "wandb"):
+        config.wandb.enabled = True
+        config.wandb.group = args.study_name
+        
+        # Create a unique, informative name for the W&B run
+        run_name = f"trial_{trial_num}"
+        if "resnet3d_variant" in trial.params:
+            run_name += f"_resnet{trial.params['resnet3d_variant']}"
+        elif "densenet3d_variant" in trial.params:
+            run_name += f"_densenet{trial.params['densenet3d_variant']}"
+        elif "vit3d_variant" in trial.params:
+            run_name += f"_vit-{trial.params['vit3d_variant']}"
+        
+        config.wandb.run_name = run_name
+        config.wandb.resume = "allow"
 
-    trial_output_dir = config.paths.output_dir / f"trial_{trial_num}"
+    trial_output_dir = Path(base_config.paths.output_dir) / f"trial_{trial_num}"
     trial_output_dir.mkdir(parents=True, exist_ok=True)
     config.paths.output_dir = trial_output_dir
 
+    # --- Configure Trial-Specific Logging ---
+    # Add a temporary file handler to the root logger for this trial only.
+    # This captures all logs from the training process into a trial-specific file.
     log_file = trial_output_dir / f"trial_{trial_num}.log"
-    setup_logging(log_file=log_file)
-
-    logger.info(
-        f"Starting trial {trial_num} with training data: "
-        f"'{config.paths.labels.train.name}'"
+    trial_file_handler = logging.FileHandler(log_file)
+    trial_file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
-    logger.info(f"Parameters: {trial.params}")
-
+    logging.getLogger().addHandler(trial_file_handler)
+    
+    # Log high-level info to the main console/log file
+    logger.info(
+        f"Starting trial {trial_num}. Parameters: {trial.params}. "
+        f"See log for details: {log_file}"
+    )
 
     def pruning_callback(epoch: int, metrics: dict):
         """
@@ -136,15 +156,17 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
         logger.error(
             f"Trial {trial_num} failed due to CUDA Out of Memory. Pruning."
         )
-        # Prune the trial manually if an OOM error occurs
         raise optuna.exceptions.TrialPruned()
     except Exception as e:
         logger.error(
             f"Trial {trial_num} failed with an unexpected error: {e}",
             exc_info=True,
         )
-        # Return a poor value to discourage this parameter set
         return 0.0
+    finally:
+        # Crucially, remove the trial-specific file handler to prevent log duplication
+        logging.getLogger().removeHandler(trial_file_handler)
+        trial_file_handler.close()
     
 
 
@@ -211,6 +233,14 @@ def main():
 
     # Load the base configuration from the specified YAML file
     base_config = load_config(args.config)
+    
+    # --- Setup Main Logging ---
+    # This configures a central logger for the study, directing output to
+    # both the console and a main log file.
+    output_dir = Path(base_config.paths.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    study_log_file = output_dir / f"study_{args.study_name}.log"
+    setup_logging(log_file=study_log_file)
 
     pruner = None
     if args.pruner == "median":

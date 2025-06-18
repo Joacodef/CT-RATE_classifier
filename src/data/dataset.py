@@ -101,7 +101,8 @@ class CTDataset3D(Dataset):
     def _load_from_cache(self, idx: int) -> Optional[Dict[str, any]]:
         """
         Attempts to load a preprocessed sample from the cache.
-        If loading fails (e.g., corrupted file), it attempts to delete the corrupted cache file.
+        If loading fails, it returns None, allowing the sample to be regenerated.
+        This simplified error handling is safer for multiprocessing.
         """
         if not self.use_cache or not self.cache_dir:
             return None
@@ -109,24 +110,13 @@ class CTDataset3D(Dataset):
         cache_path = self._get_cache_path(idx)
         if cache_path.exists():
             try:
-                logger.debug(f"Loading sample {idx} from cache: {cache_path}")
+                # Attempt to load the cached file.
                 return torch.load(cache_path, map_location='cpu')
-            except Exception as e:
-                logger.warning(f"CACHE_LOAD_ERROR: Error loading sample {idx} from cache {cache_path}: {type(e).__name__} - {e}. Attempting to remove corrupted file.")
-                if cache_path.exists():
-                    logger.info(f"CACHE_DELETE_ATTEMPT: Corrupted file {cache_path} exists. Attempting unlink.")
-                    try:
-                        cache_path.unlink()
-                        if not cache_path.exists():
-                            logger.info(f"CACHE_DELETE_SUCCESS: Successfully removed corrupted cache file: {cache_path}")
-                        else:
-                            logger.error(f"CACHE_DELETE_FAILURE_POST_UNLINK: File {cache_path} still exists immediately after unlink attempt.")
-                    except OSError as unlink_e:
-                        logger.error(f"CACHE_DELETE_OSERROR: Failed to remove corrupted cache file {cache_path} due to OSError: {type(unlink_e).__name__} - {unlink_e}")
-                        if hasattr(unlink_e, 'winerror'):
-                            logger.error(f"CACHE_DELETE_OSERROR_WINCODE: Windows error code: {unlink_e.winerror}")
-                else:
-                    logger.info(f"CACHE_DELETE_SKIP: Corrupted cache file {cache_path} was already removed or did not exist before unlink attempt in except block.")
+            except Exception:
+                # In a worker process, it is safer to simply return None on error
+                # than to perform complex logging or file I/O, which can cause deadlocks.
+                # The main __getitem__ method will then regenerate this sample.
+                return None
         return None
 
     def _save_to_cache(self, idx: int, sample: Dict[str, any]):
