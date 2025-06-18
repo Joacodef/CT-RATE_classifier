@@ -37,7 +37,7 @@ class TestGetDynamicImagePath:
         volume_filename = "SUBJ01_SESS1_T1.nii.gz"
         expected_path = base_dir / "SUBJ01_SESS1" / "SUBJ01_SESS1_T1" / "SUBJ01_SESS1_T1.nii.gz"
         
-        result_path = get_dynamic_image_path(base_dir, volume_filename)
+        result_path = get_dynamic_image_path(base_dir, volume_filename, "nested")
         assert result_path == expected_path
 
     def test_filename_with_more_than_three_parts(self):
@@ -56,7 +56,7 @@ class TestGetDynamicImagePath:
         # full_path = base_dir / "P001_STUDY2" / "P001_STUDY2_SCAN3" / "P001_STUDY2_SCAN3_DWI.nii.gz"
         expected_path = base_dir / "P001_STUDY2" / "P001_STUDY2_SCAN3" / "P001_STUDY2_SCAN3_DWI.nii.gz"
         
-        result_path = get_dynamic_image_path(base_dir, volume_filename)
+        result_path = get_dynamic_image_path(base_dir, volume_filename, "nested")
         assert result_path == expected_path
 
     def test_filename_with_two_parts(self):
@@ -69,7 +69,7 @@ class TestGetDynamicImagePath:
         volume_filename = "STUDY01_CT.nii.gz"
         expected_path = base_dir / "STUDY01_CT.nii.gz"
         
-        result_path = get_dynamic_image_path(base_dir, volume_filename)
+        result_path = get_dynamic_image_path(base_dir, volume_filename, "nested")
         assert result_path == expected_path
 
     def test_filename_with_one_part(self):
@@ -82,7 +82,7 @@ class TestGetDynamicImagePath:
         volume_filename = "image123.nii.gz"
         expected_path = base_dir / "image123.nii.gz"
         
-        result_path = get_dynamic_image_path(base_dir, volume_filename)
+        result_path = get_dynamic_image_path(base_dir, volume_filename, "nested")
         assert result_path == expected_path
 
     def test_filename_without_nii_gz_extension(self):
@@ -95,7 +95,7 @@ class TestGetDynamicImagePath:
         volume_filename = "SUBJ02_SESSA_T2" # No extension
         expected_path = base_dir / "SUBJ02_SESSA" / "SUBJ02_SESSA_T2" / "SUBJ02_SESSA_T2.nii.gz"
         
-        result_path = get_dynamic_image_path(base_dir, volume_filename)
+        result_path = get_dynamic_image_path(base_dir, volume_filename, "nested")
         assert result_path == expected_path
 
     def test_filename_without_nii_gz_extension_few_parts(self):
@@ -107,7 +107,7 @@ class TestGetDynamicImagePath:
         volume_filename = "scan_45" # No extension, two parts
         expected_path = base_dir / "scan_45.nii.gz"
         
-        result_path = get_dynamic_image_path(base_dir, volume_filename)
+        result_path = get_dynamic_image_path(base_dir, volume_filename, "nested")
         assert result_path == expected_path
 
     def test_filename_with_nii_extension_only(self):
@@ -128,7 +128,7 @@ class TestGetDynamicImagePath:
         expected_path = base_dir / "IMG_001" / "IMG_001_FLAIR" / "IMG_001_FLAIR.nii.gz"
 
         # Explicitly test the 'nested' mode, which is the default.
-        result_path = get_dynamic_image_path(base_dir, volume_filename_input, mode='nested')
+        result_path = get_dynamic_image_path(base_dir, volume_filename_input, 'nested')
 
         assert result_path == expected_path, \
             (f"Result path: {result_path}, Expected: {expected_path}. "
@@ -143,7 +143,7 @@ class TestGetDynamicImagePath:
         volume_filename = "TEST_01_SCAN.nii.gz"
         expected_path = base_dir / "TEST_01" / "TEST_01_SCAN" / "TEST_01_SCAN.nii.gz"
         
-        result_path = get_dynamic_image_path(base_dir, volume_filename)
+        result_path = get_dynamic_image_path(base_dir, volume_filename, "nested")
         assert result_path == expected_path
 
     def test_empty_filename_parts(self):
@@ -159,7 +159,7 @@ class TestGetDynamicImagePath:
         volume_filename = "__.nii.gz" # Three parts, all empty strings
         expected_path = base_dir / "_" / "__" / "__.nii.gz"
         
-        result_path = get_dynamic_image_path(base_dir, volume_filename)
+        result_path = get_dynamic_image_path(base_dir, volume_filename, "nested")
         assert result_path == expected_path
 
     def test_filename_with_leading_underscores(self):
@@ -174,7 +174,7 @@ class TestGetDynamicImagePath:
         # subject_session_scan = "_SUBJ_SESS"
         expected_path = base_dir / "_SUBJ" / "_SUBJ_SESS" / "_SUBJ_SESS_SCAN.nii.gz"
 
-        result_path = get_dynamic_image_path(base_dir, volume_filename)
+        result_path = get_dynamic_image_path(base_dir, volume_filename, "nested")
         assert result_path == expected_path
 
 # To run these tests, you would typically use pytest from your terminal:

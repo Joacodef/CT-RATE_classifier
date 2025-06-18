@@ -23,8 +23,6 @@ sys.path.append(str(project_root))
 from src.training.trainer import (
     create_model,
     load_and_prepare_data,
-    train_epoch,
-    validate_epoch,
     train_model
 )
 from src.models.resnet3d import resnet18_3d
@@ -50,8 +48,7 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
         paths=SimpleNamespace(
             output_dir=output_dir,
             cache_dir=output_dir / "cache",
-            train_img_dir=Path("path/to/train/img"),
-            valid_img_dir=Path("path/to/valid/img"),
+            data_dir=tmp_path / "data",  # Added: Generic data directory
             data_subsets=SimpleNamespace(
                 train=tmp_path / "train_vols.csv",
                 valid=tmp_path / "valid_vols.csv"
@@ -81,15 +78,18 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
             num_workers=0,
             pin_memory=False,
             early_stopping_patience=2,
+            early_stopping_metric='roc_auc_macro',
+            resume_from_checkpoint=None,
             gradient_accumulation_steps=1,
-            resume_from_checkpoint=None
         ),
         optimization=SimpleNamespace(
             gradient_checkpointing=False,
             mixed_precision=False,
             use_bf16=False
         ),
-        cache=SimpleNamespace(use_cache=False)
+        cache=SimpleNamespace(use_cache=False),
+        # Added: wandb config to prevent attribute error during tests
+        wandb=SimpleNamespace(enabled=False, project=None, run_name=None, resume=None)
     )
     return config
 
@@ -211,12 +211,13 @@ class TestTrainModel:
         mock_train_epoch.return_value = 0.5  # Mock train loss
         mock_validate_epoch.return_value = (0.4, np.array([[0.1]]), np.array([[0]])) # loss, preds, labels
         
-        # Mock metrics calculation to return increasing AUC
-        mock_compute_metrics.side_effect = [
-            {'roc_auc_macro': 0.80, 'f1_macro': 0.7},
-            {'roc_auc_macro': 0.85, 'f1_macro': 0.72}, # Improvement
-            {'roc_auc_macro': 0.82, 'f1_macro': 0.71},
+        # Mock metrics calculation to return improving, then declining AUC
+        metrics_sequence = [
+            {'roc_auc_macro': 0.80, 'f1_macro': 0.70, 'loss': 0.40}, # Best at first
+            {'roc_auc_macro': 0.85, 'f1_macro': 0.72, 'loss': 0.35}, # Improvement
+            {'roc_auc_macro': 0.82, 'f1_macro': 0.71, 'loss': 0.38}, # Decline
         ]
+        mock_compute_metrics.side_effect = metrics_sequence
         
         # --- Execution ---
         trained_model, history = train_model(mock_config)
@@ -235,15 +236,13 @@ class TestTrainModel:
         assert len(history['train_loss']) == mock_config.training.num_epochs
         assert history['metrics'][-1]['roc_auc_macro'] == 0.82
         
-        # Check that checkpoints were saved
-        # best_model.pth (epoch 2), checkpoint_epoch_5, last_checkpoint (all 3 epochs)
-        # In our 3-epoch run: best (epoch 2), last (epoch 1, 2, 3)
-        assert mock_save_checkpoint.call_count >= 1 + mock_config.training.num_epochs
+        # Checkpoint saves: 1 initial + 3 for 'last_model' + 2 for 'best_model'
+        assert mock_save_checkpoint.call_count == 6
         
-        # Check that the best model was saved on the correct epoch (epoch 2, index 1)
+        # Check that the 'best_model' checkpoint reflects the metrics from epoch 1
         best_call = call(
-            mock_model, ANY, ANY, 1, 
-            {'roc_auc_macro': 0.85, 'f1_macro': 0.72}, 
+            mock_model, ANY, ANY, 1, # epoch index
+            metrics_sequence[1],   # metrics from the best epoch
             mock_config.paths.output_dir / 'best_model.pth'
         )
         mock_save_checkpoint.assert_has_calls([best_call], any_order=True)

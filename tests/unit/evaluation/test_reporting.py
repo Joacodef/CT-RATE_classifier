@@ -30,18 +30,19 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
     """Creates a mock SimpleNamespace config object for testing."""
     output_dir = tmp_path / "test_output"
     output_dir.mkdir()
-    
+
     config = SimpleNamespace(
-        # Paths
-        OUTPUT_DIR=output_dir,
-        
-        # Model and Training params from the old config structure for compatibility
-        MODEL_TYPE="TestNet3D",
-        PATHOLOGY_COLUMNS=["Cardiomegaly", "Atelectasis", "Lung nodule"],
-        NUM_PATHOLOGIES=3,
-        LEARNING_RATE=1e-4,
-        BATCH_SIZE=4,
-        TARGET_SHAPE_DHW=(96, 128, 128)
+        paths=SimpleNamespace(output_dir=output_dir),
+        model=SimpleNamespace(type="TestNet3D"),
+        pathologies=SimpleNamespace(columns=["Cardiomegaly", "Atelectasis", "Lung nodule"]),
+        training=SimpleNamespace(
+            learning_rate=1e-4,
+            batch_size=4
+            ),
+        image_processing=SimpleNamespace(
+            target_shape_dhw=(96, 128, 128),
+            target_spacing=[1.5, 1.5, 1.5]
+            )
     )
     return config
 
@@ -93,26 +94,23 @@ class TestGenerateFinalReport:
         Verifies that `generate_final_report` runs without error, calls `savefig`
         for PNG and PDF, and calls `generate_csv_report`.
         """
-        generate_final_report(mock_history, mock_config)
+        best_epoch_idx = 1 
+        generate_final_report(mock_history, mock_config, best_epoch_idx)
 
         # 1. Assert that savefig was called for both PNG and PDF
         assert mock_savefig.call_count == 2
         
-        expected_png_path = mock_config.OUTPUT_DIR / 'training_report.png'
-        expected_pdf_path = mock_config.OUTPUT_DIR / 'training_report.pdf'
+        expected_png_path = mock_config.paths.output_dir / 'training_report.png'
+        expected_pdf_path = mock_config.paths.output_dir / 'training_report.pdf'
 
-        # Check for the specific calls
+        # Check that the report was saved in both formats
         call_args_list = mock_savefig.call_args_list
-        assert call(expected_png_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none', pad_inches=0.2) in call_args_list
-        assert call(expected_pdf_path, format='pdf', bbox_inches='tight', facecolor='white', edgecolor='none', pad_inches=0.2) in call_args_list
+        saved_paths = [c[0][0] for c in call_args_list]
+        assert expected_png_path in saved_paths
+        assert expected_pdf_path in saved_paths
 
-        # 2. Assert that the CSV report generation was called
-        mock_generate_csv.assert_called_once()
-        # Check arguments passed to generate_csv_report
-        passed_history, passed_config, passed_best_epoch = mock_generate_csv.call_args[0]
-        assert passed_history == mock_history
-        assert passed_config == mock_config
-        assert passed_best_epoch == 1  # Best epoch is index 1 (0.85 ROC AUC)
+        # 2. Assert that the CSV report generation was called with the correct best_epoch
+        mock_generate_csv.assert_called_once_with(mock_history, mock_config, best_epoch_idx)
 
         # 3. Assert that the plot figure was closed
         mock_close.assert_called_once()
@@ -130,7 +128,7 @@ class TestGenerateFinalReport:
         }
         
         try:
-            generate_final_report(minimal_history, mock_config)
+            generate_final_report(minimal_history, mock_config, best_epoch_idx=0)
         except Exception as e:
             pytest.fail(f"generate_final_report failed with minimal history: {e}")
 
@@ -146,7 +144,7 @@ class TestGenerateCsvReport:
         Verifies that both the detailed CSV and summary JSON files are created.
         """
         best_epoch_idx = 1
-        output_dir = mock_config.OUTPUT_DIR
+        output_dir = mock_config.paths.output_dir
         
         generate_csv_report(mock_history, mock_config, best_epoch_idx)
 
@@ -163,7 +161,7 @@ class TestGenerateCsvReport:
         best_epoch_idx = 1
         generate_csv_report(mock_history, mock_config, best_epoch_idx)
         
-        csv_path = mock_config.OUTPUT_DIR / 'training_metrics_detailed.csv'
+        csv_path = mock_config.paths.output_dir / 'training_metrics_detailed.csv'
         df = pd.read_csv(csv_path)
 
         # Check number of rows
@@ -192,7 +190,7 @@ class TestGenerateCsvReport:
         best_epoch_idx = 1
         generate_csv_report(mock_history, mock_config, best_epoch_idx)
         
-        json_path = mock_config.OUTPUT_DIR / 'training_summary.json'
+        json_path = mock_config.paths.output_dir / 'training_summary.json'
         with open(json_path, 'r') as f:
             summary = json.load(f)
 

@@ -169,12 +169,12 @@ class TestMainFunction:
     @patch('argparse.ArgumentParser.parse_args')
     @patch('scripts.optimize_hyperparams.load_config')
     @patch('optuna.create_study')
-    def test_main_flow(self, mock_create_study, mock_load_config, mock_parse_args):
+    def test_main_flow(self, mock_create_study, mock_load_config, mock_parse_args, tmp_path):
         """
         Verifies that the main function correctly parses args, creates a study,
         and starts optimization.
         """
-        # Setup: Mock argument parsing, config loading, and study creation
+        # Setup: Mock argument parsing
         mock_args = argparse.Namespace(
             config='path/to/config.yaml',
             n_trials=10,
@@ -183,34 +183,42 @@ class TestMainFunction:
             trials_on_5_percent=2,
             trials_on_20_percent=5,
             trials_on_50_percent=8,
+            pruner='median'
         )
         mock_parse_args.return_value = mock_args
-        mock_load_config.return_value = MagicMock()
-        
+
+        # Mock the config object returned by load_config to control the output path
+        mock_cfg = MagicMock()
+        mock_cfg.paths.output_dir = tmp_path
+        mock_load_config.return_value = mock_cfg
+
         mock_study = MagicMock()
-        # Configure the mock study to behave more like a real one
         mock_best_trial = SimpleNamespace(value=0.9543, params={'param_a': 1})
         mock_study.best_trial = mock_best_trial
-        mock_study.get_trials.return_value = [] # for pruned/complete trials
-        mock_study.trials = [mock_best_trial]      # for total trials
-        
+        mock_study.get_trials.return_value = []
+        mock_study.trials = [mock_best_trial]
+
         mock_create_study.return_value = mock_study
 
         # Execute
-        # Patch the objective and the TrialState since it's used for reporting
         with patch('scripts.optimize_hyperparams.objective'), \
              patch('optuna.trial.TrialState'):
-             main()
+                main()
 
         # Assert
         mock_load_config.assert_called_once_with('path/to/config.yaml')
+
+        # Construct the expected storage path according to the script's logic
+        expected_storage_path = tmp_path / 'test.db'
+        expected_storage_str = f"sqlite:///{expected_storage_path.resolve()}"
+
         mock_create_study.assert_called_once_with(
             direction="maximize",
             study_name='test_study',
-            storage='sqlite:///test.db',
+            storage=expected_storage_str,
             load_if_exists=True,
+            pruner=ANY
         )
         mock_study.optimize.assert_called_once()
-        # Check that n_trials was passed correctly to optimize
-        call_kwargs = mock_study.optimize.call_args[1]
+        call_kwargs = mock_study.optimize.call_args.kwargs
         assert call_kwargs['n_trials'] == 10

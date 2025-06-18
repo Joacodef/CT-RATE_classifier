@@ -45,7 +45,7 @@ def safe_json_dump(data, file_path):
         json.dump(converted_data, f, indent=2)
 
 
-def generate_final_report(history: dict, config):
+def generate_final_report(history: dict, config, best_epoch_idx: int):
     """Generate comprehensive training report with visualizations"""
     
     logger.info("Generating final training report...")
@@ -60,9 +60,6 @@ def generate_final_report(history: dict, config):
     valid_losses = history['valid_loss']
     
     # Extract metrics over epochs
-    # Safely determine the best epoch
-    roc_aucs = [m.get('roc_auc_macro', 0.0) for m in history['metrics']]
-    best_epoch_idx = np.argmax(roc_aucs) if roc_aucs else 0
     
     # Safely extract metrics over epochs, filling missing values with None
     metrics_keys = [
@@ -249,8 +246,8 @@ def generate_final_report(history: dict, config):
     # Overall title
     fig.suptitle(f'CT 3D Classifier Training Report - {config.model.type}', fontsize=16, fontweight='bold')
     
-    # Save the figure with tight layout
-    plt.tight_layout()
+    # Adjust layout to prevent title overlap and ensure all elements fit.
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
     
     # Save the figure
     report_path = config.paths.output_dir / 'training_report.png'
@@ -314,6 +311,7 @@ def generate_csv_report(history: dict, config, best_epoch_idx: int):
         'Final Validation Loss': float(history['valid_loss'][-1]),
         'Training Time per Epoch (avg)': 'Not tracked',
         'Model Type': str(config.model.type) if hasattr(config, 'model') else 'Unknown',
+        'Number of Pathologies': len(config.pathologies.columns) if hasattr(config, 'pathologies') else 'Unknown',
         'Batch Size': int(config.training.batch_size) if hasattr(config, 'training') else 'Unknown',
         'Learning Rate': float(config.training.learning_rate) if hasattr(config, 'training') else 'Unknown',
         'Target Shape (DHW)': list(config.image_processing.target_shape_dhw) if hasattr(config, 'image_processing') else 'Unknown',

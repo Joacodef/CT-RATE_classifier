@@ -204,7 +204,7 @@ class TestCTDataset3D:
         mock_preprocess_monai.assert_called_once() # Should be called as cache is initially empty
         # Get the arguments preprocess_ct_volume_monai was called with
         args_call, kwargs_call = mock_preprocess_monai.call_args
-        assert kwargs_call['nii_path'] == get_dynamic_image_path(params["img_dir"], mock_dataframe.iloc[0]['VolumeName'])
+        assert kwargs_call['nii_path'] == get_dynamic_image_path(params["img_dir"], mock_dataframe.iloc[0]['VolumeName'], "nested")
         assert kwargs_call['target_shape_dhw'] == params["target_shape_dhw"]
         assert isinstance(kwargs_call['preprocessing_pipeline'], MonaiCompose)
 
@@ -393,7 +393,7 @@ class TestCTDataset3D:
         
         hierarchical_name = "SUBJ01_SESSA_T1scan.nii.gz"
 
-        expected_path_from_util = get_dynamic_image_path(params["img_dir"], hierarchical_name)
+        expected_path_from_util = get_dynamic_image_path(params["img_dir"], hierarchical_name, "nested")
         expected_subdir = expected_path_from_util.parent
         expected_subdir.mkdir(parents=True, exist_ok=True)
 
