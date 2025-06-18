@@ -249,15 +249,36 @@ def main():
     # Pass the loaded base_config and command-line args to the objective function
     objective_with_args = functools.partial(objective, base_config=base_config, args=args)
 
-    logger.info(
-        f"Starting study '{args.study_name}' with {args.n_trials} total trials."
-    )
+    # --- Log Study Status (New or Resumed) ---
+    existing_trials = len(study.trials)
+    if existing_trials > 0:
+        logger.info(
+            f"Resuming study '{args.study_name}' from storage. "
+            f"{existing_trials} trials already exist."
+        )
+        if existing_trials >= args.n_trials:
+            logger.info(
+                "The study has already reached or exceeded the target number "
+                f"of trials ({args.n_trials}). No new trials will be run."
+            )
+        else:
+            remaining_trials = args.n_trials - existing_trials
+            logger.info(
+                f"Will run {remaining_trials} more trials to reach the goal "
+                f"of {args.n_trials} total trials."
+            )
+    else:
+        logger.info(
+            f"Starting new study '{args.study_name}' with a target of "
+            f"{args.n_trials} trials."
+        )
+
     logger.info(f"Storage is set to: {storage_name}")
     logger.info(
-        f"Staged trials: {args.trials_on_5_percent} (5%) -> "
-        f"{args.trials_on_20_percent} (20%) -> "
-        f"{args.trials_on_50_percent} (50%) -> "
-        f"{args.n_trials} (100%)"
+        f"Staged optimization: Trials <{args.trials_on_5_percent} on 5% data, "
+        f"<{args.trials_on_20_percent} on 20% data, "
+        f"<{args.trials_on_50_percent} on 50% data, "
+        f"the rest on 100%."
     )
 
     study.optimize(objective_with_args, n_trials=args.n_trials)
