@@ -87,6 +87,12 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
         variant = trial.suggest_categorical("vit3d_variant", ["tiny", "small", "base"])
         config.model.variant = variant
 
+    # Suggest the loss function type
+    loss_type = trial.suggest_categorical(
+        "loss_type", ["BCEWithLogitsLoss", "FocalLoss"]
+    )
+    config.loss_function.type = loss_type
+
     if config.loss_function.type == "FocalLoss":
         config.loss_function.focal_loss.alpha = trial.suggest_float(
             "focal_loss_alpha", 0.1, 0.9
@@ -95,6 +101,20 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
             "focal_loss_gamma", 1.0, 5.0
         )
 
+    config.training.learning_rate = trial.suggest_float(
+        "learning_rate", 1e-5, 1e-3, log=True
+    )
+    config.training.weight_decay = trial.suggest_float(
+        "weight_decay", 1e-6, 1e-2, log=True
+    )
+    config.training.batch_size = trial.suggest_categorical(
+        "batch_size", [2, 4, 8]
+    )
+
+    # Suggest the T_max multiplier for the CosineAnnealingLR scheduler
+    config.lr_scheduler.t_max_multiplier = trial.suggest_float(
+        "t_max_multiplier", 0.5, 1.5, step=0.25
+    )
     # --- Trial-specific Configuration ---
     # Configure W&B for this trial, enabling grouped runs
     if hasattr(config, "wandb"):
