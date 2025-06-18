@@ -53,8 +53,8 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
             train_img_dir=Path("path/to/train/img"),
             valid_img_dir=Path("path/to/valid/img"),
             data_subsets=SimpleNamespace(
-                selected_train_volumes=tmp_path / "train_vols.csv",
-                selected_valid_volumes=tmp_path / "valid_vols.csv"
+                train=tmp_path / "train_vols.csv",
+                valid=tmp_path / "valid_vols.csv"
             ),
             labels=SimpleNamespace(
                 train=tmp_path / "train_labels.csv",
