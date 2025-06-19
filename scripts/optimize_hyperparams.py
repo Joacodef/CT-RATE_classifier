@@ -108,7 +108,7 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
         "weight_decay", 1e-6, 1e-2, log=True
     )
     config.training.batch_size = trial.suggest_categorical(
-        "batch_size", [2, 4, 8]
+        "batch_size", [1, 2, 4]
     )
     
     # --- Trial-specific Configuration ---
