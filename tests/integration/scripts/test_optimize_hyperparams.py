@@ -28,10 +28,12 @@ from scripts.optimize_hyperparams import objective, main
 def mock_base_config(tmp_path: Path) -> SimpleNamespace:
     """Provides a mock baseline configuration object."""
     output_dir = tmp_path / "test_output"
+    data_subsets_dir = tmp_path / "data_subsets"
     return SimpleNamespace(
         paths=SimpleNamespace(
             output_dir=output_dir,
-            labels=SimpleNamespace(train=output_dir / "train_full.csv")
+            data_subsets=SimpleNamespace(train=data_subsets_dir / "train.csv"),
+            labels=SimpleNamespace(train=tmp_path / "labels" / "train.csv")
         ),
         training=SimpleNamespace(
             learning_rate=0.0, weight_decay=0.0, batch_size=0
@@ -40,7 +42,8 @@ def mock_base_config(tmp_path: Path) -> SimpleNamespace:
         loss_function=SimpleNamespace(
             type="FocalLoss",
             focal_loss=SimpleNamespace(alpha=0.0, gamma=0.0)
-        )
+        ),
+        wandb=SimpleNamespace(enabled=False)
     )
 
 @pytest.fixture
@@ -50,6 +53,7 @@ def mock_args() -> argparse.Namespace:
         trials_on_5_percent=5,
         trials_on_20_percent=10,
         trials_on_50_percent=15,
+        study_name="test_study"
     )
 
 @pytest.fixture
@@ -70,11 +74,9 @@ class TestObjectiveFunction:
     """Tests the core logic of the Optuna objective function."""
 
     @patch('scripts.optimize_hyperparams.train_model')
-    @patch('scripts.optimize_hyperparams.setup_logging')
-    @patch('pathlib.Path.mkdir')
     @patch('pathlib.Path.exists')
     def test_successful_trial_returns_metric(
-        self, mock_exists, mock_mkdir, mock_setup_logging, mock_train_model,
+        self, mock_exists, mock_train_model,
         mock_trial, mock_base_config, mock_args
     ):
         """
@@ -95,11 +97,9 @@ class TestObjectiveFunction:
         assert result == 0.85
 
     @patch('scripts.optimize_hyperparams.train_model')
-    @patch('scripts.optimize_hyperparams.setup_logging')
-    @patch('pathlib.Path.mkdir')
     @patch('pathlib.Path.exists')
     def test_staged_optimization_path_selection(
-        self, mock_exists, mock_mkdir, mock_setup_logging, mock_train_model,
+        self, mock_exists, mock_train_model,
         mock_trial, mock_base_config, mock_args
     ):
         """
@@ -107,57 +107,56 @@ class TestObjectiveFunction:
         """
         mock_exists.return_value = True
         mock_train_model.return_value = (None, {'metrics': []})
-        base_train_path = mock_base_config.paths.labels.train
 
         # Trial 0 should use 5% dataset
         mock_trial.number = 0
         objective(mock_trial, mock_base_config, mock_args)
         called_config = mock_train_model.call_args[1]['config']
-        assert called_config.paths.labels.train.name == "train_05_percent.csv"
+        assert called_config.paths.train_subset_path.name == "train_05_percent.csv"
 
-        # Trial 6 should use 20% dataset
+        # Trial 6 should use 20% dataset (between 5 and 10)
         mock_trial.number = 6
         objective(mock_trial, mock_base_config, mock_args)
         called_config = mock_train_model.call_args[1]['config']
-        assert called_config.paths.labels.train.name == "train_20_percent.csv"
+        assert called_config.paths.train_subset_path.name == "train_20_percent.csv"
 
-        # Trial 12 should use 50% dataset
+        # Trial 12 should use 50% dataset (between 10 and 15)
         mock_trial.number = 12
         objective(mock_trial, mock_base_config, mock_args)
         called_config = mock_train_model.call_args[1]['config']
-        assert called_config.paths.labels.train.name == "train_50_percent.csv"
+        assert called_config.paths.train_subset_path.name == "train_50_percent.csv"
 
-        # Trial 16 should use full dataset
+        # Trial 16 should use full dataset (train_subset_path is None)
         mock_trial.number = 16
         objective(mock_trial, mock_base_config, mock_args)
         called_config = mock_train_model.call_args[1]['config']
-        assert called_config.paths.labels.train == base_train_path
+        assert called_config.paths.train_subset_path is None
 
     @patch('scripts.optimize_hyperparams.train_model')
-    @patch('scripts.optimize_hyperparams.setup_logging')
-    @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.exists')
     def test_cuda_oom_prunes_trial(
-        self, mock_mkdir, mock_setup_logging, mock_train_model,
+        self, mock_exists, mock_train_model,
         mock_trial, mock_base_config, mock_args
     ):
         """
         Verifies that a CUDA OOM error correctly raises a TrialPruned exception.
         """
+        mock_exists.return_value = True  # Ensure file checks pass
         mock_train_model.side_effect = torch.cuda.OutOfMemoryError()
 
         with pytest.raises(optuna.exceptions.TrialPruned):
             objective(mock_trial, mock_base_config, mock_args)
 
     @patch('scripts.optimize_hyperparams.train_model')
-    @patch('scripts.optimize_hyperparams.setup_logging')
-    @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.exists')
     def test_generic_exception_returns_zero(
-        self, mock_mkdir, mock_setup_logging, mock_train_model,
+        self, mock_exists, mock_train_model,
         mock_trial, mock_base_config, mock_args
     ):
         """
         Verifies that any other exception during training returns 0.0.
         """
+        mock_exists.return_value = True  # Ensure file checks pass
         mock_train_model.side_effect = ValueError("A generic error")
         
         result = objective(mock_trial, mock_base_config, mock_args)

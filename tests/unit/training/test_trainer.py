@@ -48,7 +48,10 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
         paths=SimpleNamespace(
             output_dir=output_dir,
             cache_dir=output_dir / "cache",
-            data_dir=tmp_path / "data",  # Added: Generic data directory
+            data_dir=tmp_path / "data",
+            train_img_dir=tmp_path / "data" / "train",
+            valid_img_dir=tmp_path / "data" / "valid",
+            dir_structure="flat",
             data_subsets=SimpleNamespace(
                 train=tmp_path / "train_vols.csv",
                 valid=tmp_path / "valid_vols.csv"
