@@ -110,11 +110,7 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
     config.training.batch_size = trial.suggest_categorical(
         "batch_size", [2, 4, 8]
     )
-
-    # Suggest the T_max multiplier for the CosineAnnealingLR scheduler
-    config.lr_scheduler.t_max_multiplier = trial.suggest_float(
-        "t_max_multiplier", 0.5, 1.5, step=0.25
-    )
+    
     # --- Trial-specific Configuration ---
     # Configure W&B for this trial, enabling grouped runs
     if hasattr(config, "wandb"):
