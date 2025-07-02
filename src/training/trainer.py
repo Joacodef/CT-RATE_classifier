@@ -403,6 +403,8 @@ def train_model(
                 name=getattr(config.wandb, 'run_name', None),
                 group=getattr(config.wandb, 'group', None),
                 resume=getattr(config.wandb, 'resume', None),
+                reinit=True,  # Allow re-initialization for multiple trials in one script
+                settings=wandb.Settings(_disable_stats=True) # Reduce overhead
             )
             logger.info(f"Weights & Biases initialized successfully. Run name: {wandb_run.name}, Group: {wandb_run.group}")
         except Exception as e:
