@@ -267,7 +267,7 @@ def main():
     # both the console and a main log file.
     output_dir = Path(base_config.paths.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    study_log_file = output_dir / f"study_{args.study_name}.log"
+    study_log_file = output_dir / f"{args.study_name}.log"
     setup_logging(log_file=study_log_file)
 
     pruner = None

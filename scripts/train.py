@@ -1,6 +1,8 @@
+# scripts/train.py
 import sys
 import argparse
 from pathlib import Path
+import logging
 
 # Add the project root to the Python path
 project_root = Path(__file__).resolve().parents[1]
@@ -10,16 +12,16 @@ from src.config import load_config
 from src.training.trainer import train_model
 from src.utils.logging_config import setup_logging
 from src.training.utils import find_latest_checkpoint
-import logging
-
 
 def main():
     """
     Main function to start or resume the training process.
-    It loads a base configuration from a YAML file and allows for
-    overrides via command-line arguments.
+    It loads a base configuration and allows for overrides via command-line arguments.
     """
-    parser = argparse.ArgumentParser(description="Run the training pipeline.")
+    parser = argparse.ArgumentParser(
+        description="Run the training pipeline.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
     parser.add_argument(
         "--config",
         type=str,
@@ -41,15 +43,21 @@ def main():
     )
     parser.add_argument(
         '--resume',
-        action='store_true',
-        help='Resume training from the latest checkpoint in the output directory.'
+        nargs='?',
+        const=True,
+        default=None,
+        help=(
+            "Resume training. \n"
+            "- If used as a flag (`--resume`), it automatically finds the latest checkpoint.\n"
+            "- If given a path (`--resume path/to/ckpt.pth`), it resumes from that specific file."
+        )
     )
     args = parser.parse_args()
 
-    # 1. Load the base configuration from the specified YAML file
+    # 1. Load the base configuration
     config = load_config(args.config)
 
-    # 2. Override the configuration with command-line arguments if provided
+    # 2. Override config with command-line arguments
     if args.model_type:
         logging.info(f"Overriding model.type from '{config.model.type}' to '{args.model_type}'")
         config.model.type = args.model_type
@@ -58,25 +66,37 @@ def main():
         logging.info(f"Overriding model.variant from '{config.model.variant}' to '{args.model_variant}'")
         config.model.variant = args.model_variant
 
-    if args.resume:
-        logging.info("Attempting to resume from the latest checkpoint...")
-        latest_checkpoint = find_latest_checkpoint(config.paths.output_dir)
-        if latest_checkpoint:
-            config.training.resume_from_checkpoint = latest_checkpoint
-            logging.info(f"Found checkpoint. Resuming from: {latest_checkpoint}")
+    # 3. Handle resume logic
+    if args.resume is not None:
+        checkpoint_path = None
+        if args.resume is True:
+            # Automatic resume: find the latest checkpoint
+            logging.info("Attempting to resume from the latest checkpoint...")
+            checkpoint_path = find_latest_checkpoint(config.paths.output_dir)
+            if not checkpoint_path:
+                logging.warning(
+                    f"Automatic resume failed: no checkpoint found in {config.paths.output_dir}. "
+                    "Starting a new training session."
+                )
         else:
-            logging.warning(
-                f"--resume flag was used, but no checkpoint was found in {config.paths.output_dir}. "
-                "Starting a new training session."
-            )
-    
-    # 3. Setup logging and start training
-    # The output directory is now defined in the config, so we can create the log file there
-    setup_logging(log_file=config.paths.output_dir / 'ct_3d_training.log')
+            # Specific resume: use the provided path
+            logging.info(f"Attempting to resume from specific checkpoint: {args.resume}")
+            checkpoint_path = Path(args.resume)
+            if not checkpoint_path.exists():
+                logging.error(f"Resume failed: Specified checkpoint not found at {checkpoint_path}")
+                return # Exit if specific checkpoint is not found
+
+        if checkpoint_path:
+            config.training.resume_from_checkpoint = str(checkpoint_path)
+            logging.info(f"Training will resume from: {checkpoint_path}")
+
+    # 4. Setup logging and start training
+    log_dir = config.paths.output_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(log_file=log_dir / 'ct_3d_training.log')
     
     logging.info("Configuration loaded and processed. Starting training.")
     train_model(config)
-
 
 if __name__ == "__main__":
     main()

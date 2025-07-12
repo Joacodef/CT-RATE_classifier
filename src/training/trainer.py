@@ -14,19 +14,34 @@ warnings.filterwarnings('ignore', category=UserWarning)
 # Third-party imports
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 import numpy as np
 import pandas as pd
 import wandb
+
+# MONAI imports
+from monai.data import PersistentDataset, DataLoader, Dataset
+from monai.transforms import (
+    Compose,
+    LoadImaged,
+    EnsureChannelFirstd,
+    Orientationd,
+    Spacingd,
+    ScaleIntensityRanged,
+    Resized,
+    RandFlipd,
+    RandGaussianNoised,
+    RandShiftIntensityd,
+    EnsureTyped,
+)
+from monai.losses import FocalLoss
 
 # Internal imports - models
 from src.models.resnet3d import resnet18_3d, resnet34_3d
 from src.models.densenet3d import densenet121_3d, densenet169_3d, densenet201_3d, densenet161_3d
 from src.models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d
-from src.models.losses import FocalLoss
 
 # Internal imports - data
-from src.data.dataset import CTDataset3D
+from src.data.dataset import CTMetadataDataset, ApplyTransforms
 
 # Internal imports - training utilities
 from src.training.metrics import compute_metrics
@@ -224,9 +239,9 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
     )
 
     for batch_idx, batch in enumerate(progress_bar):
-         # Move data to the specified device.
-        pixel_values = batch["pixel_values"].to(device, non_blocking=True)
-        labels = batch["labels"].to(device, non_blocking=True)
+        # Move data to the specified device.
+        pixel_values = batch["image"].to(device, non_blocking=True)
+        labels = batch["label"].to(device, non_blocking=True)
 
         if use_amp and scaler is not None:
                 # Determine the dtype for mixed precision based on config and hardware support.
@@ -305,8 +320,8 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Modul
 
     for batch in progress_bar:
         # Move data to the specified device.
-        pixel_values = batch["pixel_values"].to(device, non_blocking=True)
-        labels = batch["labels"].to(device, non_blocking=True)
+        pixel_values = batch["image"].to(device, non_blocking=True)
+        labels = batch["label"].to(device, non_blocking=True)
 
         # Forward pass.
         outputs = model(pixel_values)
@@ -416,37 +431,74 @@ def train_model(
     # Load and prepare data.
     train_df, valid_df = load_and_prepare_data(config)
 
-    # Create training and validation datasets.
-    logger.info("Using dataset class: CTDataset3D")
+    # Define MONAI Transform Pipelines
+    # These keys must match the dictionary keys returned by CTMetadataDataset
+    keys = ["image", "label"]
 
-    train_dataset = CTDataset3D(
+    preprocess_transforms = Compose([
+        LoadImaged(keys="image", image_only=True, ensure_channel_first=True,
+                   reader="NibabelReader"),
+        Orientationd(keys="image", axcodes=config.image_processing.orientation_axcodes),
+        Spacingd(keys="image", pixdim=config.image_processing.target_spacing, mode="bilinear"),
+        ScaleIntensityRanged(keys="image",
+                               a_min=config.image_processing.clip_hu_min,
+                               a_max=config.image_processing.clip_hu_max,
+                               b_min=0.0, b_max=1.0, clip=True),
+        Resized(keys="image", spatial_size=config.image_processing.target_shape_dhw, mode="area"),
+        EnsureTyped(keys=keys, dtype=torch.float32)
+    ])
+
+    augment_transforms = Compose([
+        RandFlipd(keys="image", prob=0.5, spatial_axis=[0]),  # Flip along depth axis
+        RandFlipd(keys="image", prob=0.5, spatial_axis=[2]),  # Flip along width axis
+        RandGaussianNoised(keys="image", prob=0.2, mean=0.0, std=0.01),
+        RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5),
+        EnsureTyped(keys=keys, dtype=torch.float32)
+    ])
+
+    # Create the base metadata datasets
+    base_train_ds = CTMetadataDataset(
         dataframe=train_df,
-        img_dir=config.paths.train_img_dir, # Use generic data_dir
+        img_dir=config.paths.train_img_dir,
         pathology_columns=config.pathologies.columns,
-        target_spacing_xyz=np.array(config.image_processing.target_spacing),
-        target_shape_dhw=config.image_processing.target_shape_dhw,
-        clip_hu_min=config.image_processing.clip_hu_min,
-        clip_hu_max=config.image_processing.clip_hu_max,
-        use_cache=config.cache.use_cache,
-        cache_dir=config.paths.cache_dir,
-        augment=True,
-        orientation_axcodes=config.image_processing.orientation_axcodes,
         path_mode=config.paths.dir_structure
     )
-    valid_dataset = CTDataset3D(
+    base_valid_ds = CTMetadataDataset(
         dataframe=valid_df,
-        img_dir=config.paths.valid_img_dir, # Use generic data_dir
+        img_dir=config.paths.valid_img_dir,
         pathology_columns=config.pathologies.columns,
-        target_spacing_xyz=np.array(config.image_processing.target_spacing),
-        target_shape_dhw=config.image_processing.target_shape_dhw,
-        clip_hu_min=config.image_processing.clip_hu_min,
-        clip_hu_max=config.image_processing.clip_hu_max,
-        use_cache=config.cache.use_cache,
-        cache_dir=config.paths.cache_dir,
-        augment=False,
-        orientation_axcodes=config.image_processing.orientation_axcodes,
         path_mode=config.paths.dir_structure
     )
+
+    # Compose the final datasets with caching and augmentations
+    if config.cache.use_cache:
+        # For training: cache preprocessed data, then apply augmentations
+        train_ds_cached = PersistentDataset(
+            data=base_train_ds,
+            transform=preprocess_transforms,
+            cache_dir=config.paths.cache_dir / "train"
+        )
+        if config.training.augment:
+            train_dataset = ApplyTransforms(train_ds_cached, augment_transforms)
+            logger.info("Using cached dataset with on-the-fly augmentations for training.")
+        else:
+            train_dataset = train_ds_cached
+            logger.info("Using cached dataset without augmentations for training.")
+
+        # For validation: cache preprocessed data, no augmentations
+        valid_dataset = PersistentDataset(
+            data=base_valid_ds,
+            transform=preprocess_transforms,
+            cache_dir=config.paths.cache_dir / "valid"
+        )
+        logger.info("Using cached dataset for validation.")
+    else:
+        # No caching, apply all transforms on-the-fly
+        logger.info("Caching is disabled. Applying all transforms on-the-fly.")
+        final_train_transforms = Compose([preprocess_transforms, augment_transforms]) if config.training.augment else preprocess_transforms
+        train_dataset = Dataset(data=base_train_ds, transform=final_train_transforms)
+        valid_dataset = Dataset(data=base_valid_ds, transform=preprocess_transforms)
+
 
     train_loader = DataLoader(
         train_dataset, batch_size=config.training.batch_size, shuffle=True,

@@ -17,7 +17,7 @@ paths:
   cache_dir: ${CACHE_DIR}
   data_dir: ${DATA_DIR}
 
-  dir_structure: "flat"
+  dir_structure: "nested" # Options: "flat", "nested"
 
   # These paths are relative to the base_project_dir
   data_subsets:
@@ -38,7 +38,7 @@ paths:
 # --- Model Configuration ---
 model:
   type: "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d"
-  variant: "base"      # Options depend on model type (e.g., "18", "121", "base")
+  variant: "small"      # Options depend on model type (e.g., "18", "121", "base")
 
   # Vision Transformer specific settings (only used if model.type == "vit3d")
   vit_specific:
@@ -65,6 +65,7 @@ training:
   weight_decay: 0.01
   num_workers: 0
   pin_memory: true
+  augment: true
   early_stopping_patience: 5
   resume_from_checkpoint: null # Set to a path like 'path/to/checkpoint.pth' to resume
 
@@ -77,7 +78,7 @@ optimization:
 # --- Image Processing Parameters ---
 image_processing:
   target_spacing: [0.75, 0.75, 1.5]  # In mm (X, Y, Z)
-  target_shape_dhw: [160, 320, 320] # (Depth, Height, Width)
+  target_shape_dhw: [128, 256, 256] # (Depth, Height, Width)
   clip_hu_min: -1000
   clip_hu_max: 1000
   orientation_axcodes: "LPS"      # e.g., "LPS", "RAS"
@@ -113,7 +114,7 @@ pathologies:
 # Weights & Biases Configuration
 wandb:
   # Set to true to enable W&B logging for your runs.
-  enabled: true
+  enabled: false
   # The name of the project in your W&B account where runs will be logged.
   project: "ct-volume-classifier"
   # The 'resume' option allows interrupted runs to be continued. 

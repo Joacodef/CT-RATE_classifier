@@ -11,6 +11,8 @@ import torch
 import numpy as np
 import pandas as pd
 import logging
+from types import SimpleNamespace
+from tqdm import tqdm
 
 # Add the project root to the Python path to allow imports from `src`
 project_root = Path(__file__).resolve().parents[1]
@@ -18,53 +20,70 @@ sys.path.append(str(project_root))
 
 from src.config import load_config
 from src.training.trainer import create_model
-from src.data.preprocessing import (
-    create_monai_preprocessing_pipeline,
-    preprocess_ct_volume_monai
-)
 from src.utils.logging_config import setup_logging
+
+# MONAI imports for preprocessing
+from monai.transforms import (
+    Compose,
+    LoadImaged,
+    EnsureChannelFirstd,
+    Orientationd,
+    Spacingd,
+    ScaleIntensityRanged,
+    Resized,
+    EnsureTyped,
+)
 
 class CTInference:
     """Single volume inference class using MONAI for preprocessing."""
 
-    def __init__(self, model_path: str, config: Config, device: str = 'auto', orientation_axcodes: str = "LPS"):
+    def __init__(self, model_path: str, config: SimpleNamespace, device: str = 'auto'):
         """
         Initializes the CTInference instance.
 
         Args:
             model_path: Path to the trained model checkpoint.
-            config: Configuration object.
+            config: Configuration object, typically loaded from the training config.
             device: Device to run inference on ('auto', 'cuda', 'cpu').
-            orientation_axcodes: Target orientation for MONAI's Orientationd transform.
         """
         self.config = config
         self.device = self._setup_device(device)
-        self.logger = setup_logging('inference.log') # Setup logger instance variable
+        self.logger = logging.getLogger(__name__)
         self.model = self._load_model(model_path)
 
-        # Initialize the MONAI preprocessing pipeline
-        self.monai_pipeline = create_monai_preprocessing_pipeline(
-            target_spacing_xyz=self.config.image_processing.target_spacing,
-            target_shape_dhw=self.config.image_processing.target_shape_dhw,
-            clip_hu_min=self.config.image_processing.clip_hu_min,
-            clip_hu_max=self.config.image_processing.clip_hu_max,
-            orientation_axcodes=orientation_axcodes
-        )
-        self.logger.info(f"CTInference initialized with MONAI pipeline. Orientation: {orientation_axcodes}")
+        # Define the MONAI preprocessing pipeline directly.
+        # This ensures consistency with the validation pipeline in the trainer.
+        self.monai_pipeline = Compose([
+            LoadImaged(keys="image", image_only=True, ensure_channel_first=True, reader="NibabelReader"),
+            Orientationd(keys="image", axcodes=self.config.image_processing.orientation_axcodes),
+            Spacingd(keys="image", pixdim=self.config.image_processing.target_spacing, mode="bilinear"),
+            ScaleIntensityRanged(
+                keys="image",
+                a_min=self.config.image_processing.clip_hu_min,
+                a_max=self.config.image_processing.clip_hu_max,
+                b_min=0.0,
+                b_max=1.0,
+                clip=True
+            ),
+            Resized(keys="image", spatial_size=self.config.image_processing.target_shape_dhw, mode="area"),
+            EnsureTyped(keys="image", dtype=torch.float32)
+        ])
+        self.logger.info("CTInference initialized with a MONAI preprocessing pipeline.")
 
 
-    def _setup_device(self, device_option: str) -> torch.device: # Renamed 'device' to 'device_option' to avoid conflict
+    def _setup_device(self, device_option: str) -> torch.device:
         """Sets up the computation device."""
         if device_option == 'auto':
             selected_device = 'cuda' if torch.cuda.is_available() else 'cpu'
         else:
             selected_device = device_option
-        self.logger.info(f"Using device: {selected_device}") # Log the selected device
-        return torch.device(selected_device)
+        
+        device = torch.device(selected_device)
+        self.logger.info(f"Using device: {device}")
+        return device
 
     def _load_model(self, model_path: str) -> torch.nn.Module:
         """Loads the trained model from a checkpoint."""
-        # Create model architecture using the centralized factory function
         self.logger.info(
             f"Creating model architecture: {self.config.model.type} "
             f"(variant: {self.config.model.variant}) for inference."
@@ -75,17 +94,17 @@ class CTInference:
 
         try:
             checkpoint = torch.load(model_path, map_location=self.device)
+            # Handle both dictionary-based checkpoints and raw state_dict files
             if 'model_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['model_state_dict'])
-                epoch = checkpoint.get('epoch', 'unknown')
+                epoch = checkpoint.get('epoch', 'N/A')
                 self.logger.info(f"Loaded model state_dict from epoch {epoch} of {model_path}")
             else:
-                # This case assumes the checkpoint is just the state_dict.
                 model.load_state_dict(checkpoint)
                 self.logger.info(f"Loaded model state_dict directly from {model_path}")
 
             model = model.to(self.device)
-            model.eval() # Set model to evaluation mode.
+            model.eval()
             self.logger.info(f"Model successfully loaded onto {self.device} and set to eval mode.")
             return model
         except FileNotFoundError:
@@ -96,8 +115,8 @@ class CTInference:
             raise
 
 
-    @torch.no_grad() # Disables gradient calculations during inference.
-    def predict_volume(self, volume_path_str: str) -> dict: # Renamed volume_path to volume_path_str
+    @torch.no_grad()
+    def predict_volume(self, volume_path_str: str) -> dict:
         """
         Predicts pathologies for a single CT volume using the MONAI pipeline.
 
@@ -107,41 +126,30 @@ class CTInference:
         Returns:
             A dictionary containing predictions and probabilities for each pathology.
         """
-        volume_path = Path(volume_path_str) # Convert string to Path object
+        volume_path = Path(volume_path_str)
         if not volume_path.exists():
             self.logger.error(f"Volume not found: {volume_path}")
             raise FileNotFoundError(f"Volume not found: {volume_path}")
 
         self.logger.info(f"Preprocessing volume: {volume_path}")
-        # Preprocess volume using the MONAI pipeline
-        tensor = preprocess_ct_volume_monai(
-            nii_path=volume_path,
-            preprocessing_pipeline=self.monai_pipeline,
-            target_shape_dhw=self.config.image_processing.target_shape_dhw # For error fallback
-        )
+        
+        # Create a data dictionary and apply the MONAI pipeline
+        data_dict = {'image': volume_path}
+        processed_dict = self.monai_pipeline(data_dict)
+        tensor = processed_dict['image']
 
-        # Add batch dimension if not already [1, C, D, H, W]
-        # preprocess_ct_volume_monai should return [1, D, H, W]
-        # For MONAI, ensure C is 1, so [1, 1, D, H, W] if model expects 5D with C=1
-        # Assuming the model input is [B, C, D, H, W], and preprocess_ct_volume_monai returns [1, D, H, W] (single channel)
-        # The current resnet3d.py conv1 expects nn.Conv3d(1, 64, ...), so input should be [B, 1, D, H, W]
-        # The `preprocess_ct_volume_monai` already returns it with a channel dim of 1.
-        # So tensor shape is [1, D, H, W]. For batch processing, it needs to be [N, 1, D, H, W].
-        # Here, N=1 for single volume prediction.
-
-        # No unsqueeze(0) needed here if preprocess_ct_volume_monai already returns [1,D,H,W] and model expects [B,1,D,H,W]
-        # The batch dimension is implicitly handled by DataLoader or added here for single inference.
-        # For a single prediction, it becomes the batch dimension.
-        input_tensor = tensor.to(self.device) # tensor is already [1, D, H, W]
+        # Add a batch dimension and send to the correct device
+        input_tensor = tensor.unsqueeze(0).to(self.device)
 
         self.logger.info(f"Running inference on processed tensor with shape: {input_tensor.shape}")
+        
         # Run inference
         outputs = self.model(input_tensor)
 
-        # Convert to probabilities
-        probabilities = torch.sigmoid(outputs).cpu().numpy()[0] # Get the first (and only) batch item
+        # Convert logits to probabilities
+        probabilities = torch.sigmoid(outputs).cpu().numpy()[0]
 
-        # Create results dictionary
+        # Format results
         results = {
             'volume_path': str(volume_path),
             'predictions': {}
@@ -149,52 +157,42 @@ class CTInference:
 
         for i, pathology in enumerate(self.config.pathologies.columns):
             prob = float(probabilities[i])
-            # Prediction based on a 0.5 threshold, could be made configurable
-            prediction = int(prob > 0.5)
-            confidence = max(prob, 1 - prob) # Simple confidence measure
-
+            prediction = int(prob > 0.5) # Threshold can be adjusted
+            
             results['predictions'][pathology] = {
                 'probability': prob,
-                'prediction': prediction,
-                'confidence': confidence
+                'prediction': prediction
             }
         self.logger.info(f"Prediction complete for {volume_path}")
         return results
 
     def predict_batch(self, volume_paths: list, output_file: str = None) -> pd.DataFrame:
-        """Predict pathologies for multiple volumes"""
+        """Predicts pathologies for a list of volume paths."""
+        all_results_data = []
 
-        all_results_data = [] # Store dictionaries for DataFrame creation
-
-        for i, volume_path_str in enumerate(volume_paths):
+        for i, volume_path_str in enumerate(tqdm(volume_paths, desc="Batch Inference")):
             self.logger.info(f"Processing {i+1}/{len(volume_paths)}: {volume_path_str}")
-
             try:
-                # Use predict_volume for each file path
                 result_dict = self.predict_volume(volume_path_str)
-
-                # Flatten results for DataFrame
                 row_data = {'volume_path': result_dict['volume_path']}
                 for pathology, pred_data in result_dict['predictions'].items():
                     row_data[f'{pathology}_probability'] = pred_data['probability']
                     row_data[f'{pathology}_prediction'] = pred_data['prediction']
-                    row_data[f'{pathology}_confidence'] = pred_data['confidence']
                 all_results_data.append(row_data)
 
             except Exception as e:
-                self.logger.error(f"Error processing {volume_path_str}: {e}")
-                # Add row with NaN values for errored files
+                self.logger.error(f"Failed to process {volume_path_str}: {e}")
                 error_row = {'volume_path': str(volume_path_str)}
                 for pathology in self.config.pathologies.columns:
                     error_row[f'{pathology}_probability'] = np.nan
                     error_row[f'{pathology}_prediction'] = np.nan
-                    error_row[f'{pathology}_confidence'] = np.nan
                 all_results_data.append(error_row)
 
         results_df = pd.DataFrame(all_results_data)
 
         if output_file:
             try:
+                Path(output_file).parent.mkdir(parents=True, exist_ok=True)
                 results_df.to_csv(output_file, index=False)
                 self.logger.info(f"Batch prediction results saved to: {output_file}")
             except Exception as e:
@@ -205,114 +203,80 @@ class CTInference:
 def main():
     parser = argparse.ArgumentParser(description='Run inference on CT volumes')
     parser.add_argument(
-        '--config',
-        type=str,
-        required=True,
+        '--config', type=str, required=True,
         help='Path to the YAML configuration file used during model training.'
     )
     parser.add_argument(
-        '--model',
-        type=str,
-        required=True,
+        '--model', type=str, required=True,
         help='Path to trained model checkpoint (.pth file).'
     )
     parser.add_argument(
-        '--input',
-        type=str,
-        required=True,
-        help='Path to a single CT volume or a directory containing volumes (.nii.gz).'
+        '--input', type=str, required=True,
+        help='Path to a single CT volume (.nii.gz) or a directory of volumes.'
     )
     parser.add_argument(
-        '--output',
-        type=str,
-        default='inference_results',
+        '--output', type=str, default='inference_results',
         help='Base name for the output file(s) (e.g., .csv for batch, .json for single).'
     )
     parser.add_argument(
-        '--device',
-        type=str,
-        default='auto',
-        choices=['auto', 'cuda', 'cpu']
+        '--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu']
     )
-    parser.add_argument(
-        '--orientation',
-        type=str,
-        default="LPS",
-        help="Target orientation for MONAI preprocessing (e.g., LPS, RAS)."
-    )
-
     args = parser.parse_args()
     
-    # Setup main logger
-    setup_logging(log_file_path='inference_main.log')
+    # Setup logging
+    setup_logging(log_file_path=Path(args.output).parent / 'inference.log')
     logger = logging.getLogger(__name__)
 
-    # Load configuration from the specified YAML file
-    config = load_config(args.config)
-    
-    # Initialize the inference engine
-    inference = CTInference(
-        model_path=args.model,
-        config=config,
-        device=args.device,
-        orientation_axcodes=args.orientation
-    )
+    try:
+        config = load_config(args.config)
+        
+        inference = CTInference(
+            model_path=args.model,
+            config=config,
+            device=args.device
+        )
 
-    input_path = Path(args.input)
+        input_path = Path(args.input)
 
-    if input_path.is_file():
-        if not input_path.name.endswith((".nii", ".nii.gz")): # Basic check for NIfTI
-            logger.error(f"Input file {input_path} does not appear to be a NIfTI file (.nii or .nii.gz).")
-            return
+        if input_path.is_file():
+            if not input_path.name.endswith((".nii", ".nii.gz")):
+                logger.error(f"Input file {input_path} is not a NIfTI file.")
+                return
 
-        logger.info(f"Performing inference on single volume: {input_path}")
-        try:
+            logger.info(f"Performing inference on single volume: {input_path}")
             result = inference.predict_volume(str(input_path))
 
             print(f"\nPredictions for {input_path.name}:")
             print("=" * 50)
-
             for pathology, pred_data in result['predictions'].items():
                 status = "POSITIVE" if pred_data['prediction'] else "NEGATIVE"
-                print(f"{pathology:30s} | Prob: {pred_data['probability']:.3f} | Pred: {status} | Conf: {pred_data['confidence']:.3f}")
+                print(f"{pathology:40s} | Prob: {pred_data['probability']:.4f} | Pred: {status}")
 
-            # Save as JSON for single file inference
             output_json_path = Path(args.output).with_suffix('.json')
-            output_json_path.parent.mkdir(parents=True, exist_ok=True) # Ensure dir exists
+            output_json_path.parent.mkdir(parents=True, exist_ok=True)
             with open(output_json_path, 'w') as f:
-                json.dump(result, f, indent=2)
+                json.dump(result, f, indent=4)
             logger.info(f"Single volume prediction saved to: {output_json_path}")
 
-        except Exception as e:
-            logger.error(f"Failed to process single volume {input_path}: {e}")
+        elif input_path.is_dir():
+            logger.info(f"Scanning directory for volumes: {input_path}")
+            volume_paths = list(input_path.glob("*.nii.gz")) + list(input_path.glob("*.nii"))
+            
+            if not volume_paths:
+                logger.warning(f"No .nii or .nii.gz files found in {input_path}")
+                return
 
+            logger.info(f"Found {len(volume_paths)} volumes for batch processing.")
+            output_csv_path = Path(args.output).with_suffix('.csv')
+            
+            results_df = inference.predict_batch([str(p) for p in volume_paths], str(output_csv_path))
+            print(f"\nProcessed {len(results_df)} volumes. Results saved to: {output_csv_path}")
 
-    elif input_path.is_dir():
-        logger.info(f"Performing inference on directory: {input_path}")
-        # Glob for .nii and .nii.gz files
-        volume_paths = list(input_path.glob("*.nii.gz")) + list(input_path.glob("*.nii"))
-
-        if not volume_paths:
-            logger.warning(f"No .nii or .nii.gz files found in {input_path}")
-            print(f"No .nii or .nii.gz files found in {input_path}")
-            return
-
-        logger.info(f"Found {len(volume_paths)} volumes for batch processing.")
-        # Ensure output filename for batch is .csv
-        output_csv_path = Path(args.output).with_suffix('.csv')
-        output_csv_path.parent.mkdir(parents=True, exist_ok=True) # Ensure dir exists
-
-        results_df = inference.predict_batch([str(p) for p in volume_paths], str(output_csv_path))
-        if not results_df.empty:
-            print(f"\nProcessed {len(results_df)} volumes.")
-            print(f"Batch results saved to: {output_csv_path}")
         else:
-            print("No results generated from batch processing.")
-            logger.warning("Batch processing resulted in an empty DataFrame.")
+            logger.error(f"Input path not found or is not a file/directory: {input_path}")
 
-    else:
-        logger.error(f"Input path not found or is not a file/directory: {input_path}")
-        print(f"Input path not found or is not a file/directory: {input_path}")
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred: {e}", exc_info=True)
 
 if __name__ == "__main__":
     main()

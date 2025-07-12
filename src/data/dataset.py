@@ -1,207 +1,138 @@
-# data/dataset.py
+# src/data/dataset.py
+"""
+This module defines the dataset classes used for loading and preparing CT scan data
+for the training pipeline. It follows a modular approach in line with MONAI best practices.
+"""
+
+import logging
+from pathlib import Path
+from typing import List, Dict, Any, Callable
+
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
-# Updated import: using MONAI-based preprocessing
-from .preprocessing import create_monai_preprocessing_pipeline, preprocess_ct_volume_monai
-from .utils import get_dynamic_image_path
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from typing import Optional, Dict, Tuple, List
 
-import logging # Standard library logging
-logger = logging.getLogger(__name__) # Standard library logger
+from src.data.utils import get_dynamic_image_path
 
-class CTDataset3D(Dataset):
+# Get a logger for this module
+logger = logging.getLogger(__name__)
+
+class CTMetadataDataset(Dataset):
     """
-    Represents a 3D CT scan dataset for pathology classification.
-    This class handles loading, preprocessing (using MONAI), caching, and augmenting CT scan volumes.
-    It is designed to work with PyTorch's DataLoader for efficient batch processing.
-    """
+    A PyTorch Dataset that provides metadata for CT scans.
 
+    This dataset's primary role is to return the file path of a CT volume and its
+    corresponding multi-label pathology vector for a given index. It does not load
+    or perform any transformations on the image data itself. This separation of
+    concerns makes it compatible with MONAI's data handling components like
+    PersistentDataset, which manage data loading and caching.
+
+    Attributes:
+        dataframe (pd.DataFrame): The DataFrame containing volume names and labels.
+        img_dir (Path): The base directory where the CT scan volumes are stored.
+        pathology_columns (List[str]): A list of column names in the DataFrame
+            that represent the pathology labels.
+        path_mode (str): The directory structure mode ('flat' or 'nested') used
+            to locate the image files.
+    """
     def __init__(self, dataframe: pd.DataFrame, img_dir: Path,
-                 pathology_columns: List[str], target_spacing_xyz: np.ndarray,
-                 target_shape_dhw: Tuple[int, int, int], clip_hu_min: float, clip_hu_max: float,
-                 use_cache: bool = True, cache_dir: Optional[Path] = None,
-                 augment: bool = False, orientation_axcodes: str = "LPS", path_mode: str = 'nested',
-                 save_transformed_path: Optional[Path] = None):
+                 pathology_columns: List[str], path_mode: str = "nested"):
         """
-        Initializes the CTDataset3D instance.
+        Initializes the CTMetadataDataset.
 
         Args:
-            dataframe: Pandas DataFrame containing metadata for the dataset,
-                       including volume names and pathology labels.
-            img_dir: Path to the directory containing CT scan image files (e.g., .nii.gz).
-            pathology_columns: List of column names in the DataFrame that represent pathology labels.
-            target_spacing_xyz: Numpy array specifying the desired voxel spacing (x, y, z)
-                                for resampling.
-            target_shape_dhw: Tuple specifying the desired shape (depth, height, width)
-                                  for the processed volumes.
-            clip_hu_min: Minimum Hounsfield Unit (HU) value for windowing.
-            clip_hu_max: Maximum Hounsfield Unit (HU) value for windowing.
-            use_cache: Boolean indicating whether to use caching for preprocessed samples.
-                       Defaults to True.
-            cache_dir: Path to the directory for storing cached samples.
-                       Required if use_cache is True. Defaults to None.
-            augment: Boolean indicating whether to apply data augmentation.
-                     Defaults to False.
-            orientation_axcodes: Target orientation for MONAI's Orientationd transform (e.g., "LPS", "RAS").
-                                 Defaults to "LPS".
-            save_transformed_path (Optional[Path]): If provided, the directory path where
-                                                     the transformed images will be saved.
-                                                     Defaults to None.
+            dataframe (pd.DataFrame): DataFrame with volume names and pathology labels.
+            img_dir (Path): The root directory for the image volumes.
+            pathology_columns (List[str]): The names of the label columns.
+            path_mode (str): The directory structure type. Can be 'flat' or 'nested'.
+                'flat': All images are directly inside img_dir.
+                'nested': Images are in subdirectories based on their name.
         """
-
-        self.dataframe = dataframe.reset_index(drop=True)
-        self.img_dir = Path(img_dir) # Ensures img_dir is a Path object
+        self.dataframe = dataframe
+        self.img_dir = Path(img_dir)
         self.pathology_columns = pathology_columns
-        # Parameters for MONAI pipeline are stored directly
-        self.target_spacing_xyz = np.asarray(target_spacing_xyz)
-        self.target_shape_dhw = tuple(target_shape_dhw)
-        self.clip_hu_min = float(clip_hu_min)
-        self.clip_hu_max = float(clip_hu_max)
-        self.orientation_axcodes = orientation_axcodes
-        self.path_mode = path_mode 
-        self.save_transformed_path = save_transformed_path
-        
-
-        self.use_cache = use_cache
-        self.cache_dir = Path(cache_dir) if cache_dir else None
-        self.augment = augment
-
-        if self.use_cache:
-            if not self.cache_dir:
-                # Logs an error if caching is enabled but no cache directory is provided.
-                logger.error("Cache directory must be provided if use_cache is True.")
-                raise ValueError("Cache directory must be provided if use_cache is True.")
-            # Creates the cache directory if it does not already exist.
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Initialize the MONAI preprocessing pipeline
-        # This pipeline is created once and reused for all samples.
-        self.monai_preprocessing_pipeline = create_monai_preprocessing_pipeline(
-            target_spacing_xyz=self.target_spacing_xyz,
-            target_shape_dhw=self.target_shape_dhw,
-            clip_hu_min=self.clip_hu_min,
-            clip_hu_max=self.clip_hu_max,
-            orientation_axcodes=self.orientation_axcodes,
-            save_transformed_path=self.save_transformed_path # Step 2.2: Pass argument to pipeline creator
-        )
-
-        logger.info(f"Dataset initialized with {len(self.dataframe)} samples. Caching: {self.use_cache}, Augmentation: {self.augment}. MONAI pipeline created.")
-
-    def _get_cache_path(self, idx: int) -> Path:
-        """
-        Generates the file path for a cached sample.
-        """
-        volume_name = self.dataframe.iloc[idx]['VolumeName']
-        cleaned_name = volume_name.replace(".nii.gz", "").replace(".nii", "")
-        return self.cache_dir / f"sample_monai_{cleaned_name}_{idx:06d}.pt"
-
-    def _load_from_cache(self, idx: int) -> Optional[Dict[str, any]]:
-        """
-        Attempts to load a preprocessed sample from the cache.
-        If loading fails, it returns None, allowing the sample to be regenerated.
-        This simplified error handling is safer for multiprocessing.
-        """
-        if not self.use_cache or not self.cache_dir:
-            return None
-
-        cache_path = self._get_cache_path(idx)
-        if cache_path.exists():
-            try:
-                # Attempt to load the cached file.
-                return torch.load(cache_path, map_location='cpu')
-            except Exception:
-                # In a worker process, it is safer to simply return None on error
-                # than to perform complex logging or file I/O, which can cause deadlocks.
-                # The main __getitem__ method will then regenerate this sample.
-                return None
-        return None
-
-    def _save_to_cache(self, idx: int, sample: Dict[str, any]):
-        """
-        Saves a preprocessed sample to the cache.
-        """
-        if not self.use_cache or not self.cache_dir:
-            return
-
-        cache_path = self._get_cache_path(idx)
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(sample, cache_path)
-            logger.debug(f"Saved sample {idx} to cache: {cache_path}")
-        except Exception as e:
-            logger.warning(f"Error saving sample {idx} to cache {cache_path}: {e}")
+        self.path_mode = path_mode
 
     def __len__(self) -> int:
-        """
-        Returns the total number of samples in the dataset.
-        """
+        """Returns the total number of samples in the dataset."""
         return len(self.dataframe)
 
-    def __getitem__(self, idx: int) -> Dict[str, any]:
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
-        Retrieves a sample from the dataset by index.
-        """
-        # NOTE: When saving transformed files, caching should ideally be disabled
-        # to ensure the save operation is triggered for each item.
-        cached_sample = self._load_from_cache(idx)
-        if cached_sample is not None:
-            if self.augment and 'pixel_values' in cached_sample:
-                cached_sample['pixel_values'] = self._apply_augmentation(cached_sample['pixel_values'].clone())
-            return cached_sample
+        Retrieves the metadata for a single sample.
 
+        This method fetches the volume name and labels for the given index,
+        constructs the full path to the NIfTI file, and returns them in a
+        dictionary. This dictionary is the standard format expected by MONAI's
+        downstream transform and loading components.
+
+        Args:
+            idx (int): The index of the sample to retrieve.
+
+        Returns:
+            A dictionary containing:
+            - 'image' (Path): The absolute path to the CT volume file.
+            - 'label' (torch.Tensor): A float tensor of the pathology labels.
+            - 'volume_name' (str): The name of the volume file.
+        """
         row = self.dataframe.iloc[idx]
         volume_name = row['VolumeName']
-        labels_data = row[self.pathology_columns].values.astype(np.float32)
-        labels = torch.tensor(labels_data, dtype=torch.float32)
-        img_path = get_dynamic_image_path(self.img_dir, volume_name, dir_structure=self.path_mode)
 
-        pixel_values: torch.Tensor
-        if not img_path or not img_path.exists():
-            logger.error(f"Volume not found: {img_path} for index {idx}. Returning zero tensor.")
-            pixel_values = torch.zeros((1, *self.target_shape_dhw), dtype=torch.float32)
-        else:
-            # The monai_preprocessing_pipeline now includes the saving transform if the path was provided
-            pixel_values = preprocess_ct_volume_monai(
-                nii_path=img_path,
-                preprocessing_pipeline=self.monai_preprocessing_pipeline,
-                target_shape_dhw=self.target_shape_dhw
+        # Construct the full path to the image using the original volume name
+        nii_path = get_dynamic_image_path(self.img_dir, volume_name, self.path_mode)
+
+        if not nii_path.exists():
+            logger.warning(
+                f"Volume not found: {nii_path} for index {idx}. "
+                "The 'image' key will point to a non-existent path."
             )
 
-        sample = {
-            "pixel_values": pixel_values,
-            "labels": labels,
-            "volume_name": str(volume_name)
+        labels = torch.tensor(row[self.pathology_columns].values.astype(float), dtype=torch.float32)
+
+        return {
+            "image": nii_path,
+            "label": labels,
+            "volume_name": volume_name
         }
 
-        self._save_to_cache(idx, sample)
 
-        if self.augment:
-            sample["pixel_values"] = self._apply_augmentation(sample["pixel_values"].clone())
+class ApplyTransforms(Dataset):
+    """
+    A wrapper dataset that applies a set of transforms to the output of another dataset.
 
-        return sample
+    This class is useful for applying transformations, such as data augmentation,
+    on-the-fly after data has been loaded from a base dataset (which could be a
+    caching dataset like MONAI's PersistentDataset).
 
-    def _apply_augmentation(self, volume: torch.Tensor) -> torch.Tensor:
+    Attributes:
+        data (Dataset): The base dataset to wrap.
+        transform (Callable): A callable (e.g., a MONAI Compose object) that takes
+            a data dictionary and returns a transformed version.
+    """
+    def __init__(self, data: Dataset, transform: Callable):
         """
-        Applies a series of random augmentations to the input volume.
+        Initializes the ApplyTransforms wrapper.
+
+        Args:
+            data (Dataset): The base dataset that provides the initial data dict.
+            transform (Callable): The function or Compose object to apply to the data.
         """
-        volume = volume.float()
-        if torch.rand(1).item() > 0.5:
-            volume = torch.flip(volume, dims=[1])
-            logger.debug("Applied depth flip augmentation.")
-        if torch.rand(1).item() > 0.5:
-            volume = torch.flip(volume, dims=[3])
-            logger.debug("Applied width flip augmentation.")
-        if torch.rand(1).item() > 0.7:
-            noise = torch.randn_like(volume) * 0.01
-            volume = volume + noise
-            volume = torch.clamp(volume, 0.0, 1.0)
-            logger.debug("Applied noise augmentation.")
-        if torch.rand(1).item() > 0.5:
-            shift = (torch.rand(1).item() - 0.5) * 0.1
-            volume = volume + shift
-            volume = torch.clamp(volume, 0.0, 1.0)
-            logger.debug(f"Applied intensity shift: {shift:.4f}")
-        return volume
+        self.data = data
+        self.transform = transform
+
+    def __len__(self) -> int:
+        """Returns the length of the base dataset."""
+        return len(self.data)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Retrieves an item from the base dataset and applies the transform.
+
+        Args:
+            idx (int): The index of the sample to retrieve and transform.
+
+        Returns:
+            The transformed data dictionary.
+        """
+        item = self.data[idx]
+        return self.transform(item)
