@@ -3,6 +3,7 @@
 # Standard library imports
 import time
 import json
+import hashlib
 import logging
 from tqdm.auto import tqdm
 from pathlib import Path
@@ -19,7 +20,7 @@ import pandas as pd
 import wandb
 
 # MONAI imports
-from monai.data import PersistentDataset, DataLoader, Dataset
+from monai.data import PersistentDataset, DataLoader, Dataset, CacheDataset 
 from monai.transforms import (
     Compose,
     LoadImaged,
@@ -60,6 +61,52 @@ from src.utils.torch_utils import setup_torch_optimizations
 
 # Get logger
 logger = logging.getLogger(__name__)
+
+
+def get_transform_params(transform):
+    """
+    Recursively get the parameters of a MONAI transform object
+    in a way that is stable for hashing.
+    """
+    params = {"class": transform.__class__.__name__}
+    # Use __dict__ to get all attributes
+    for k, v in transform.__dict__.items():
+        # Exclude private/internal attributes
+        if k.startswith("_"):
+            continue
+        # Recursively process nested transforms (like in Compose)
+        if hasattr(v, '__dict__'):
+            params[k] = get_transform_params(v)
+        elif isinstance(v, (list, tuple)):
+            # Handle lists of transforms or other values
+            params[k] = [get_transform_params(i) if hasattr(i, '__dict__') else i for i in v]
+        else:
+            # Add simple values
+            params[k] = v
+    return params
+
+def deterministic_json_hash(item):
+    """
+    Creates a deterministic hash from an object by converting it to a
+    sorted JSON string. Handles MONAI transforms by inspecting their
+    parameters instead of their memory addresses.
+    """
+    processed_item = item
+    # Check if the item is a list of MONAI transforms
+    if isinstance(item, list) and hasattr(item[0], '__class__') and "monai.transforms" in str(item[0].__class__):
+        # If it's a list of transforms, get their parameters
+        processed_item = [get_transform_params(t) for t in item]
+    
+    # Use default=str as a fallback for any other complex types
+    item_str = json.dumps(processed_item, sort_keys=True, default=str)
+    
+    # Optional: You can remove the print statement now if you want
+    # print(f"HASHING_INPUT: {item_str}")
+
+    # The function must return bytes
+    return hashlib.md5(item_str.encode('utf-8')).hexdigest().encode('utf-8')
+
+
 
 def create_model(config: SimpleNamespace) -> nn.Module:
     """Create and return the 3D model based on the provided configuration."""
@@ -428,6 +475,7 @@ def train_model(
 
     # Ensure output directory exists.
     config.paths.output_dir.mkdir(parents=True, exist_ok=True)
+
     # Load and prepare data.
     train_df, valid_df = load_and_prepare_data(config)
 
@@ -472,26 +520,53 @@ def train_model(
 
     # Compose the final datasets with caching and augmentations
     if config.cache.use_cache:
-        # For training: cache preprocessed data, then apply augmentations
-        train_ds_cached = PersistentDataset(
+        logger.info(f"Hybrid caching enabled. Disk cache is persistent.")
+        
+        # --- Training Dataset Chain ---
+        
+        # 1. On-disk cache for the entire dataset
+        train_persistent_ds = PersistentDataset(
             data=base_train_ds,
             transform=preprocess_transforms,
-            cache_dir=config.paths.cache_dir / "train"
+            cache_dir=config.paths.cache_dir / "train",
+            hash_func=deterministic_json_hash,
+            hash_transform=deterministic_json_hash
         )
-        if config.training.augment:
-            train_dataset = ApplyTransforms(train_ds_cached, augment_transforms)
-            logger.info("Using cached dataset with on-the-fly augmentations for training.")
-        else:
-            train_dataset = train_ds_cached
-            logger.info("Using cached dataset without augmentations for training.")
 
-        # For validation: cache preprocessed data, no augmentations
-        valid_dataset = PersistentDataset(
+        # 2. In-memory cache for a percentage of the on-disk data
+        logger.info(f"Caching {config.cache.memory_rate * 100:.0f}% of training data in RAM.")
+        train_in_memory_ds = CacheDataset(
+            data=train_persistent_ds,
+            cache_rate=config.cache.memory_rate,
+            num_workers=config.training.num_workers
+        )
+
+        # 3. Apply on-the-fly augmentations to the cached data
+        if config.training.augment:
+            train_dataset = ApplyTransforms(train_in_memory_ds, augment_transforms)
+            logger.info("Applying on-the-fly augmentations to hybrid-cached training data.")
+        else:
+            train_dataset = train_in_memory_ds
+            logger.info("Hybrid-cached training data ready.")
+
+        # --- Validation Dataset Chain (can also use hybrid caching) ---
+
+        valid_persistent_ds = PersistentDataset(
             data=base_valid_ds,
             transform=preprocess_transforms,
-            cache_dir=config.paths.cache_dir / "valid"
+            cache_dir=config.paths.cache_dir / "valid",
+            hash_func=deterministic_json_hash,
+            hash_transform=deterministic_json_hash
         )
-        logger.info("Using cached dataset for validation.")
+        
+        logger.info(f"Caching {config.cache.memory_rate * 100:.0f}% of validation data in RAM.")
+        valid_dataset = CacheDataset(
+            data=valid_persistent_ds,
+            cache_rate=config.cache.memory_rate, # Using the same rate for validation
+            num_workers=config.training.num_workers
+        )
+        logger.info("Hybrid-cached validation data ready.")
+
     else:
         # No caching, apply all transforms on-the-fly
         logger.info("Caching is disabled. Applying all transforms on-the-fly.")

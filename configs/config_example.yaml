@@ -86,6 +86,7 @@ image_processing:
 # --- Cache Configuration ---
 cache:
   use_cache: true
+  memory_rate: 0.1
 
 # --- Pathology Labels ---
 # The list of all pathology classes the model will predict.
