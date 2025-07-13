@@ -68,19 +68,25 @@ def worker_init_fn(worker_id):
     """
     Initialization function for DataLoader workers.
     
-    This function is called for each worker process. It registers the MONAI
-    MetaTensor and the NumPy reconstructor as safe for unpickling, which is
-    necessary when using a persistent cache with PyTorch's security updates.
+    This function is called for each worker process. It registers all necessary
+    MONAI and NumPy classes as safe for unpickling to ensure the persistent
+    cache works correctly with modern PyTorch versions.
     """
     try:
-        # Add MetaTensor and the numpy reconstructor to the list of safe globals.
-        # This is required for MONAI's PersistentDataset cache to work correctly
-        # with multiprocessing in the DataLoader.
-        torch.serialization.add_safe_globals([MetaTensor, np.core.multiarray._reconstruct])
+        # Add all required classes for unpickling complex MONAI MetaTensor objects.
+        # This includes the MetaTensor, the numpy array class, the numpy
+        # data type class, and the function to reconstruct numpy arrays.
+        torch.serialization.add_safe_globals(
+            [
+                MetaTensor, 
+                np.core.multiarray._reconstruct,
+                np.ndarray,
+                np.dtype
+            ]
+        )
     except Exception as e:
         # Log any errors during worker initialization.
         logger.error(f"Error initializing DataLoader worker {worker_id}: {e}")
-
 def get_transform_params(transform):
     """
     Recursively get the parameters of a MONAI transform object
