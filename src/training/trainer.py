@@ -68,8 +68,12 @@ logger = logging.getLogger(__name__)
 def json_serial_converter(o):
     """
     Custom JSON converter for types that are not serializable by default.
-    Handles Path objects, numpy arrays, torch Tensors/dtypes, and numpy RandomState.
+    Handles Path objects, numpy arrays, torch Tensors/dtypes, and other special types.
     """
+    # Add this check for type objects
+    if isinstance(o, type):
+        return o.__name__
+        
     if isinstance(o, Path):
         return str(o)
     if isinstance(o, torch.Tensor):
@@ -102,34 +106,40 @@ def worker_init_fn(worker_id):
     # Replace the original torch.load with our custom version for this worker.
     torch.load = custom_load
 
+import inspect
 
-def get_transform_params(transform):
+def get_transform_params(obj):
     """
-    Recursively get the parameters of a MONAI transform object
-    in a way that is stable for hashing and JSON serializable.
+    Recursively gets all public, non-callable parameters of an object
+    for stable hashing and JSON serialization. This version uses the `inspect`
+    module for a more robust and comprehensive approach.
     """
-    # Base case: if the item is not a transform object, handle its type.
-    if not hasattr(transform, '__dict__'):
-        if isinstance(transform, (torch.dtype, np.dtype)):
-            return str(transform)
-        if isinstance(transform, np.ndarray):
-            return transform.tolist()
-        return transform
+    # --- Base Cases: Handle non-decomposable objects ---
+    if isinstance(obj, (list, tuple)):
+        # If we get a list, process each item recursively.
+        return [get_transform_params(item) for item in obj]
 
-    params = {"class": transform.__class__.__name__}
-    for k, v in transform.__dict__.items():
-        # Exclude private/internal attributes and callable methods
-        if k.startswith("_") or callable(v):
+    # Stop recursion if the object is not a MONAI transform or a related object.
+    # The final conversion will be handled by the JSON serializer.
+    if not hasattr(obj, '__class__') or ("monai.transforms" not in str(obj.__class__) and "monai.data" not in str(obj.__class__)):
+        return obj
+
+    # --- Recursive Case: Process MONAI transform objects ---
+    params = {"class": obj.__class__.__name__}
+
+    # Use inspect.getmembers to reliably find all attributes and properties.
+    for name, value in inspect.getmembers(obj):
+        # Skip private, dunder, and method attributes.
+        if name.startswith('_') or inspect.ismethod(value) or inspect.isfunction(value):
             continue
 
-        # Recursively process values
-        if isinstance(v, (list, tuple)):
-            # Process every item in the list/tuple
-            params[k] = [get_transform_params(item) for item in v]
-        else:
-            # Process single items
-            params[k] = get_transform_params(v)
-            
+        # Skip attributes that are known to be irrelevant or cause issues.
+        if name in ['f', 'g', 'R', 'lazy', 'backend', 'end_pending', 'progress', 'VERSION']:
+            continue
+        
+        # Recursively process the attribute's value.
+        params[name] = get_transform_params(value)
+
     return params
 
 
