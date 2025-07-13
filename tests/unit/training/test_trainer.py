@@ -268,8 +268,8 @@ class TestTrainModel:
                      hash_func=deterministic_json_hash, hash_transform=deterministic_json_hash)
             ])
             mock_dataloader.assert_has_calls([
-                call(mock_augmented_train, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, worker_init_fn=worker_init_fn),
-                call(mock_cached_valid, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, worker_init_fn=worker_init_fn)
+                call(mock_augmented_train, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn),
+                call(mock_cached_valid, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn)
             ], any_order=False)
         else: # No cache
             mock_monai_dataset.assert_has_calls([
@@ -277,6 +277,6 @@ class TestTrainModel:
                 call(data=mock_base_valid_ds, transform=ANY)
             ])
             mock_dataloader.assert_has_calls([
-                call(mock_final_train_ds, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, worker_init_fn=worker_init_fn),
-                call(mock_final_valid_ds, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, worker_init_fn=worker_init_fn)
+                call(mock_final_train_ds, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn),
+                call(mock_final_valid_ds, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn)
             ], any_order=False)

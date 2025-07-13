@@ -34,6 +34,7 @@ from monai.transforms import (
     RandGaussianNoised,
     RandShiftIntensityd,
     EnsureTyped,
+    RandAffined
 )
 from monai.losses import FocalLoss
 
@@ -591,14 +592,6 @@ def train_model(
         EnsureTyped(keys=keys, dtype=torch.float32)
     ])
 
-    augment_transforms = Compose([
-        RandFlipd(keys="image", prob=0.5, spatial_axis=[0]),  # Flip along depth axis
-        RandFlipd(keys="image", prob=0.5, spatial_axis=[2]),  # Flip along width axis
-        RandGaussianNoised(keys="image", prob=0.2, mean=0.0, std=0.01),
-        RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5),
-        EnsureTyped(keys=keys, dtype=torch.float32)
-    ])
-
     # Create the base metadata datasets
     base_train_ds = CTMetadataDataset(
         dataframe=train_df,
@@ -612,6 +605,24 @@ def train_model(
         pathology_columns=config.pathologies.columns,
         path_mode=config.paths.dir_structure
     )
+
+    augment_transforms = Compose([
+        # GPU-accelerated spatial augmentations
+        RandAffined(
+            keys="image",
+            prob=0.6,  # Apply this transform 90% of the time
+            rotate_range=(np.pi / 12, np.pi / 12, np.pi / 12), # Rotate by +/- 15 degrees
+            scale_range=((0.85, 1.15), (0.85, 1.15), (0.85, 1.15)), # Zoom in/out by 15%
+            translate_range=((-20, 20), (-20, 20), (0, 0)), # Translate on H and W axes
+            mode="bilinear",
+            padding_mode="zeros",
+            device=device 
+        ),
+        # CPU-based intensity augmentations
+        RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.01),
+        RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5),
+        EnsureTyped(keys=keys, dtype=torch.float32)
+    ])
 
     # Compose the final datasets with caching and augmentations
     if config.cache.use_cache:
