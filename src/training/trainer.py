@@ -15,6 +15,7 @@ warnings.filterwarnings('ignore', category=UserWarning)
 # Third-party imports
 import torch
 import torch.nn as nn
+import torch.serialization
 import numpy as np
 import pandas as pd
 import wandb
@@ -35,6 +36,7 @@ from monai.transforms import (
     EnsureTyped,
 )
 from monai.losses import FocalLoss
+from monai.data.meta_tensor import MetaTensor
 
 # Internal imports - models
 from src.models.resnet3d import resnet18_3d, resnet34_3d
@@ -418,6 +420,19 @@ def train_model(
               (losses and metrics per epoch).
     """
     setup_torch_optimizations()  # Apply PyTorch performance optimizations.
+    
+    # Manually register MetaTensor to allow safe unpickling by PersistentDataset
+    # This is required due to recent security changes in PyTorch's torch.load
+    if not hasattr(torch.serialization, "_original_load"):
+        torch.serialization._original_load = torch.load
+    
+    def custom_load(*args, **kwargs):
+        # Ensure 'weights_only' is not passed or is False
+        kwargs.pop('weights_only', None)
+        return torch.serialization._original_load(*args, **kwargs)
+    
+    # Temporarily override torch.load to ensure we can unpickle MONAI's MetaTensor
+    torch.load = custom_load
     
     # Use the provided device or detect automatically.
     if device is None:
