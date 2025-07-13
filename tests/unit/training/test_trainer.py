@@ -85,7 +85,8 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
             early_stopping_metric='roc_auc_macro',
             resume_from_checkpoint=None,
             gradient_accumulation_steps=1,
-            augment=True  # Ensure augmentation path is tested
+            augment=True,
+            prefetch_factor=2
         ),
         optimization=SimpleNamespace(
             gradient_checkpointing=False,

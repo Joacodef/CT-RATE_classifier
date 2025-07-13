@@ -66,6 +66,7 @@ training:
   num_workers: 0
   pin_memory: true
   augment: true
+  prefetch_factor: 2  # Number of batches to prefetch in DataLoader
   early_stopping_patience: 5
   resume_from_checkpoint: null # Set to a path like 'path/to/checkpoint.pth' to resume
 

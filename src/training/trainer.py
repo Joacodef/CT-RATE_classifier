@@ -690,12 +690,14 @@ def train_model(
         train_dataset, batch_size=config.training.batch_size, shuffle=True,
         num_workers=config.training.num_workers, pin_memory=config.training.pin_memory,
         persistent_workers=config.training.num_workers > 0,
+        prefetch_factor=config.training.prefetch_factor if config.training.num_workers > 0 else None,
         worker_init_fn=worker_init_fn
     )
     valid_loader = DataLoader(
         valid_dataset, batch_size=config.training.batch_size, shuffle=False,
         num_workers=config.training.num_workers, pin_memory=config.training.pin_memory,
         persistent_workers=config.training.num_workers > 0,
+        prefetch_factor=config.training.prefetch_factor if config.training.num_workers > 0 else None,
         worker_init_fn=worker_init_fn
     )
 
