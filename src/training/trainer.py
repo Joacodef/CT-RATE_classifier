@@ -64,6 +64,25 @@ from src.utils.torch_utils import setup_torch_optimizations
 # Get logger
 logger = logging.getLogger(__name__)
 
+
+def json_serial_converter(o):
+    """
+    Custom JSON converter for types that are not serializable by default.
+    Handles numpy arrays, torch/numpy dtypes, and numpy RandomState objects.
+    """
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, (torch.dtype, np.dtype)):
+        return str(o)
+    if isinstance(o, np.random.RandomState):
+        # The state of a random generator is complex and not meant for serialization.
+        # We only need to know that a RandomState object exists.
+        return "np.random.RandomState object"
+    
+    # If the type is not recognized, raise the default error.
+    raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
+
+
 def worker_init_fn(worker_id):
     """
     Initialization function for DataLoader workers.
@@ -80,27 +99,37 @@ def worker_init_fn(worker_id):
     torch.load = custom_load
 
 
+
 def get_transform_params(transform):
     """
     Recursively get the parameters of a MONAI transform object
-    in a way that is stable for hashing.
+    in a way that is stable for hashing and JSON serializable.
     """
+    # Base case: if the item is not a transform object, handle its type.
+    if not hasattr(transform, '__dict__'):
+        if isinstance(transform, (torch.dtype, np.dtype)):
+            return str(transform)
+        if isinstance(transform, np.ndarray):
+            return transform.tolist()
+        return transform
+
     params = {"class": transform.__class__.__name__}
-    # Use __dict__ to get all attributes
     for k, v in transform.__dict__.items():
-        # Exclude private/internal attributes
-        if k.startswith("_"):
+        # Exclude private/internal attributes and callable methods
+        if k.startswith("_") or callable(v):
             continue
-        # Recursively process nested transforms (like in Compose)
-        if hasattr(v, '__dict__'):
-            params[k] = get_transform_params(v)
-        elif isinstance(v, (list, tuple)):
-            # Handle lists of transforms or other values
-            params[k] = [get_transform_params(i) if hasattr(i, '__dict__') else i for i in v]
+
+        # Recursively process values
+        if isinstance(v, (list, tuple)):
+            # Process every item in the list/tuple
+            params[k] = [get_transform_params(item) for item in v]
         else:
-            # Add simple values
-            params[k] = v
+            # Process single items
+            params[k] = get_transform_params(v)
+            
     return params
+
+
 
 def deterministic_json_hash(item):
     """
@@ -122,6 +151,65 @@ def deterministic_json_hash(item):
 
     # The function must return bytes
     return hashlib.md5(item_str.encode('utf-8')).hexdigest().encode('utf-8')
+
+
+def get_or_create_cache_subdirectory(base_cache_dir: Path, transforms: Compose, split: str) -> Path:
+    """
+    Determines the correct cache subdirectory based on transform parameters.
+
+    This function generates a unique hash from the preprocessing transform
+    pipeline. It then checks if a subdirectory corresponding to this hash
+    already exists. If it does, the path to that directory is returned.
+    If not, it creates the subdirectory, saves the transform parameters
+    that define the cache into a JSON file for inspection, and then
+    returns the path.
+
+    Args:
+        base_cache_dir: The root directory for all caching.
+        transforms: The MONAI Compose object containing the preprocessing transforms.
+        split: The name of the data split (e.g., 'train', 'valid').
+
+    Returns:
+        The configuration-specific path for the cache directory.
+    """
+    # Generate a unique, deterministic hash from the transform parameters.
+    # The .transforms attribute of a Compose object is the list of transforms.
+    config_hash = deterministic_json_hash(transforms.transforms).decode('utf-8')
+
+    # Construct the path for the specific cache subdirectory.
+    # e.g., /path/to/cache/train/0a1b2c3d...
+    cache_path = base_cache_dir / split / config_hash
+    params_file = cache_path / "cache_params.json"
+
+    # If the specific cache directory already exists, use it.
+    if cache_path.exists():
+        logger.info(f"Found existing cache for '{split}' split with current configuration.")
+        logger.info(f"Using cache directory: {cache_path}")
+        return cache_path
+
+    # If the cache does not exist, create it.
+    logger.info(f"No existing cache found for '{split}' split with this configuration.")
+    logger.info(f"Creating new cache directory: {cache_path}")
+    
+    try:
+        # Create the subdirectory.
+        cache_path.mkdir(parents=True, exist_ok=True)
+
+        # Get the human-readable parameters for saving as metadata.
+        transform_params = get_transform_params(transforms)
+        
+        # Save the parameters to a JSON file for future inspection.
+        with open(params_file, 'w') as f:
+            json.dump(transform_params, f, indent=4, default=json_serial_converter)
+            
+        logger.info(f"Saved cache parameters to {params_file}")
+
+    except OSError as e:
+        # Handle potential race conditions or permission errors during creation.
+        logger.error(f"Failed to create cache directory {cache_path}: {e}")
+        raise
+
+    return cache_path
 
 
 
@@ -538,19 +626,26 @@ def train_model(
     # Compose the final datasets with caching and augmentations
     if config.cache.use_cache:
         logger.info(f"Hybrid caching enabled. Disk cache is persistent.")
-        
+
         # --- Training Dataset Chain ---
         
-        # 1. On-disk cache for the entire dataset
+        # 1. Determine the configuration-specific cache directory for training data.
+        train_cache_dir = get_or_create_cache_subdirectory(
+            base_cache_dir=config.paths.cache_dir,
+            transforms=preprocess_transforms,
+            split="train"
+        )
+        
+        # 2. On-disk cache for the entire dataset using the specific directory.
         train_persistent_ds = PersistentDataset(
             data=base_train_ds,
             transform=preprocess_transforms,
-            cache_dir=config.paths.cache_dir / "train",
+            cache_dir=train_cache_dir,  # Use the new dynamic cache path
             hash_func=deterministic_json_hash,
             hash_transform=deterministic_json_hash
         )
 
-        # 2. In-memory cache for a percentage of the on-disk data
+        # 3. In-memory cache for a percentage of the on-disk data.
         logger.info(f"Caching {config.cache.memory_rate * 100:.0f}% of training data in RAM.")
         train_in_memory_ds = CacheDataset(
             data=train_persistent_ds,
@@ -558,7 +653,7 @@ def train_model(
             num_workers=config.training.num_workers
         )
 
-        # 3. Apply on-the-fly augmentations to the cached data
+        # 4. Apply on-the-fly augmentations to the cached data.
         if config.training.augment:
             train_dataset = ApplyTransforms(train_in_memory_ds, augment_transforms)
             logger.info("Applying on-the-fly augmentations to hybrid-cached training data.")
@@ -566,20 +661,29 @@ def train_model(
             train_dataset = train_in_memory_ds
             logger.info("Hybrid-cached training data ready.")
 
-        # --- Validation Dataset Chain (can also use hybrid caching) ---
+        # --- Validation Dataset Chain ---
+        
+        # 1. Determine the configuration-specific cache directory for validation data.
+        valid_cache_dir = get_or_create_cache_subdirectory(
+            base_cache_dir=config.paths.cache_dir,
+            transforms=preprocess_transforms,
+            split="valid"
+        )
 
+        # 2. On-disk cache for the validation set.
         valid_persistent_ds = PersistentDataset(
             data=base_valid_ds,
             transform=preprocess_transforms,
-            cache_dir=config.paths.cache_dir / "valid",
+            cache_dir=valid_cache_dir,  # Use the new dynamic cache path
             hash_func=deterministic_json_hash,
             hash_transform=deterministic_json_hash
         )
         
+        # 3. In-memory cache for the validation set.
         logger.info(f"Caching {config.cache.memory_rate * 100:.0f}% of validation data in RAM.")
         valid_dataset = CacheDataset(
             data=valid_persistent_ds,
-            cache_rate=config.cache.memory_rate, # Using the same rate for validation
+            cache_rate=config.cache.memory_rate,
             num_workers=config.training.num_workers
         )
         logger.info("Hybrid-cached validation data ready.")

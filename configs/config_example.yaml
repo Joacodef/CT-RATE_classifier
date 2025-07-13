@@ -75,7 +75,7 @@ optimization:
   mixed_precision: true
   use_bf16: true
 
-# --- Image Processing Parameters ---
+# --- Image Processing Parameters (CHANGING THESE FORCES THE CREATION OF A NEW CACHE)---
 image_processing:
   target_spacing: [0.75, 0.75, 1.5]  # In mm (X, Y, Z)
   target_shape_dhw: [128, 256, 256] # (Depth, Height, Width)
