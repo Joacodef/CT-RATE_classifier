@@ -23,3 +23,5 @@ configs/*
 !configs/*example.yaml
 
 MagicMock/
+
+hf_cache
