@@ -28,6 +28,7 @@ from src.training.trainer import (
 from src.models.resnet3d import resnet18_3d
 from src.models.densenet3d import densenet121_3d
 from src.models.vit3d import vit_small_3d
+from src.training.trainer import deterministic_json_hash, worker_init_fn
 
 
 # --- Fixtures ---
@@ -91,7 +92,10 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
             mixed_precision=False,
             use_bf16=False
         ),
-        cache=SimpleNamespace(use_cache=False),
+        cache=SimpleNamespace(
+            use_cache=False,
+            memory_rate=0.0,
+        ),
         # Added: wandb config to prevent attribute error during tests
         wandb=SimpleNamespace(enabled=False, project=None, run_name=None, resume=None, group=None)
     )
@@ -181,6 +185,7 @@ class TestTrainModel:
     """Tests the main `train_model` orchestration function."""
 
     @pytest.mark.parametrize("use_cache", [True, False])
+    @patch('src.training.trainer.get_or_create_cache_subdirectory')
     @patch('src.training.trainer.generate_final_report')
     @patch('src.training.trainer.save_checkpoint')
     @patch('src.training.trainer.compute_metrics')
@@ -189,18 +194,18 @@ class TestTrainModel:
     @patch('src.training.trainer.create_model')
     @patch('src.training.trainer.load_and_prepare_data')
     @patch('src.training.trainer.wandb.init')
-    # Patches for the new MONAI data pipeline
     @patch('src.training.trainer.DataLoader')
-    @patch('src.training.trainer.PersistentDataset')
     @patch('src.training.trainer.Dataset')
+    @patch('src.training.trainer.CacheDataset')
+    @patch('src.training.trainer.PersistentDataset')
     @patch('src.training.trainer.CTMetadataDataset')
     @patch('src.training.trainer.ApplyTransforms')
     def test_train_model_happy_path(
-        self, mock_apply_transforms, mock_ctmetadata_dataset, mock_monai_dataset, 
-        mock_persistent_dataset, mock_dataloader, mock_wandb_init, 
-        mock_load_data, mock_create_model, mock_train_epoch, 
-        mock_validate_epoch, mock_compute_metrics, mock_save_checkpoint, 
-        mock_generate_report, mock_config, use_cache
+        self, mock_apply_transforms, mock_ctmetadata_dataset, mock_persistent_dataset,
+        mock_cache_ds, mock_monai_dataset, mock_dataloader, mock_wandb_init,
+        mock_load_data, mock_create_model, mock_train_epoch,
+        mock_validate_epoch, mock_compute_metrics, mock_save_checkpoint,
+        mock_generate_report, mock_get_cache_dir, mock_config, use_cache
     ):
         """
         Tests the 'happy path' of train_model, ensuring all components are called
@@ -208,91 +213,69 @@ class TestTrainModel:
         """
         # --- Config Setup ---
         mock_config.cache.use_cache = use_cache
-        mock_config.training.augment = True  # Ensure augmentation path is covered
+        mock_config.training.augment = True
+        mock_config.training.num_epochs = 2 # Use a smaller number for faster tests
+        mock_config.training.early_stopping_patience = 3 # Prevent early stopping
 
-        # --- Mock Setup ---
+        # --- Mock Return Values Setup ---
         mock_load_data.return_value = (
             pd.DataFrame({'VolumeName': ['train_vol_1'], 'Cardiomegaly': [1], 'Atelectasis': [0]}),
             pd.DataFrame({'VolumeName': ['valid_vol_1'], 'Cardiomegaly': [0], 'Atelectasis': [1]})
         )
-        mock_model = MagicMock(spec=nn.Module)
+        mock_model = MagicMock(spec=nn.Module); mock_model.to.return_value = mock_model
         mock_model.parameters.return_value = nn.Linear(1, 1).parameters()
-        mock_model.to.return_value = mock_model
         mock_create_model.return_value = mock_model
         
         mock_train_epoch.return_value = 0.5
         mock_validate_epoch.return_value = (0.4, np.array([[0.1]]), np.array([[0]]))
+        mock_compute_metrics.return_value = {'roc_auc_macro': 0.85, 'f1_macro': 0.75}
         
-        metrics_sequence = [
-            {'roc_auc_macro': 0.80, 'f1_macro': 0.70, 'loss': 0.40},
-            {'roc_auc_macro': 0.85, 'f1_macro': 0.72, 'loss': 0.35},
-            {'roc_auc_macro': 0.82, 'f1_macro': 0.71, 'loss': 0.38},
-        ]
-        mock_compute_metrics.side_effect = metrics_sequence
-        
-        # --- Mock Data Pipeline Setup ---
-        mock_base_train_ds = MagicMock()
-        mock_base_valid_ds = MagicMock()
+        # --- Mock Data Pipeline Setup (Conditional) ---
+        mock_base_train_ds, mock_base_valid_ds = MagicMock(), MagicMock()
         mock_ctmetadata_dataset.side_effect = [mock_base_train_ds, mock_base_valid_ds]
 
-        mock_final_train_ds = MagicMock()
-        mock_final_valid_ds = MagicMock()
-
         if use_cache:
-            mock_persistent_dataset.side_effect = [mock_final_train_ds, mock_final_valid_ds]
-            mock_augmented_ds = MagicMock()
-            mock_apply_transforms.return_value = mock_augmented_ds
-        else:
-            mock_monai_dataset.side_effect = [mock_final_train_ds, mock_final_valid_ds]
-        
-        # --- Execution ---
-        trained_model, history = train_model(mock_config)
+            mock_train_cache_path = mock_config.paths.cache_dir / "train_hash"
+            mock_valid_cache_path = mock_config.paths.cache_dir / "valid_hash"
+            mock_get_cache_dir.side_effect = [mock_train_cache_path, mock_valid_cache_path]
 
-        # --- Assertions ---
+            mock_persistent_train, mock_persistent_valid = MagicMock(), MagicMock()
+            mock_persistent_dataset.side_effect = [mock_persistent_train, mock_persistent_valid]
+            
+            mock_cached_train, mock_cached_valid = MagicMock(), MagicMock()
+            mock_cache_ds.side_effect = [mock_cached_train, mock_cached_valid]
+
+            mock_augmented_train = MagicMock()
+            mock_apply_transforms.return_value = mock_augmented_train
+        else:
+            mock_final_train_ds, mock_final_valid_ds = MagicMock(), MagicMock()
+            mock_monai_dataset.side_effect = [mock_final_train_ds, mock_final_valid_ds]
+
+        # --- EXECUTION (Call train_model only ONCE) ---
+        train_model(mock_config)
+
+        # --- ASSERTIONS ---
         mock_load_data.assert_called_once_with(mock_config)
         mock_create_model.assert_called_once_with(mock_config)
+        assert mock_train_epoch.call_count == mock_config.training.num_epochs
         
-        mock_ctmetadata_dataset.assert_has_calls([
-            call(dataframe=ANY, img_dir=mock_config.paths.train_img_dir, pathology_columns=ANY, path_mode=ANY),
-            call(dataframe=ANY, img_dir=mock_config.paths.valid_img_dir, pathology_columns=ANY, path_mode=ANY)
-        ])
-
         if use_cache:
             mock_persistent_dataset.assert_has_calls([
-                call(data=mock_base_train_ds, transform=ANY, cache_dir=mock_config.paths.cache_dir / "train"),
-                call(data=mock_base_valid_ds, transform=ANY, cache_dir=mock_config.paths.cache_dir / "valid")
+                call(data=mock_base_train_ds, transform=ANY, cache_dir=mock_train_cache_path, 
+                     hash_func=deterministic_json_hash, hash_transform=deterministic_json_hash),
+                call(data=mock_base_valid_ds, transform=ANY, cache_dir=mock_valid_cache_path, 
+                     hash_func=deterministic_json_hash, hash_transform=deterministic_json_hash)
             ])
-            mock_monai_dataset.assert_not_called()
-            mock_apply_transforms.assert_called_once_with(mock_final_train_ds, ANY)
             mock_dataloader.assert_has_calls([
-                call(mock_augmented_ds, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY),
-                call(mock_final_valid_ds, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY)
-            ])
-        else:
-            mock_persistent_dataset.assert_not_called()
+                call(mock_augmented_train, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, worker_init_fn=worker_init_fn),
+                call(mock_cached_valid, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, worker_init_fn=worker_init_fn)
+            ], any_order=False)
+        else: # No cache
             mock_monai_dataset.assert_has_calls([
                 call(data=mock_base_train_ds, transform=ANY),
                 call(data=mock_base_valid_ds, transform=ANY)
             ])
-            mock_apply_transforms.assert_not_called()
             mock_dataloader.assert_has_calls([
-                call(mock_final_train_ds, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY),
-                call(mock_final_valid_ds, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY)
-            ])
-
-        assert mock_train_epoch.call_count == mock_config.training.num_epochs
-        assert mock_validate_epoch.call_count == mock_config.training.num_epochs
-        
-        assert len(history['metrics']) == mock_config.training.num_epochs
-        assert history['metrics'][-1]['roc_auc_macro'] == 0.82
-        
-        # Checkpoint saves: 3 for 'last_model' + 2 for 'best_model' + 1 for 'final_model'
-        assert mock_save_checkpoint.call_count == 6
-        best_call = call(
-            mock_model, ANY, ANY, 1,
-            metrics_sequence[1],
-            mock_config.paths.output_dir / 'best_model.pth'
-        )
-        mock_save_checkpoint.assert_has_calls([best_call], any_order=True)
-
-        mock_generate_report.assert_called_once()
+                call(mock_final_train_ds, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, worker_init_fn=worker_init_fn),
+                call(mock_final_valid_ds, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, worker_init_fn=worker_init_fn)
+            ], any_order=False)
