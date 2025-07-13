@@ -64,6 +64,22 @@ from src.utils.torch_utils import setup_torch_optimizations
 # Get logger
 logger = logging.getLogger(__name__)
 
+def worker_init_fn(worker_id):
+    """
+    Initialization function for DataLoader workers.
+    
+    This function is called for each worker process. It registers the MONAI
+    MetaTensor and the NumPy reconstructor as safe for unpickling, which is
+    necessary when using a persistent cache with PyTorch's security updates.
+    """
+    try:
+        # Add MetaTensor and the numpy reconstructor to the list of safe globals.
+        # This is required for MONAI's PersistentDataset cache to work correctly
+        # with multiprocessing in the DataLoader.
+        torch.serialization.add_safe_globals([MetaTensor, np.core.multiarray._reconstruct])
+    except Exception as e:
+        # Log any errors during worker initialization.
+        logger.error(f"Error initializing DataLoader worker {worker_id}: {e}")
 
 def get_transform_params(transform):
     """
@@ -420,11 +436,6 @@ def train_model(
               (losses and metrics per epoch).
     """
     setup_torch_optimizations()  # Apply PyTorch performance optimizations.
-
-    # Manually register MetaTensor to allow safe unpickling by PersistentDataset.
-    # This is required due to security changes in PyTorch's torch.load,
-    # and directly follows the recommendation from the error message.
-    torch.serialization.add_safe_globals([MetaTensor])
     
     # Use the provided device or detect automatically.
     if device is None:
@@ -585,12 +596,14 @@ def train_model(
     train_loader = DataLoader(
         train_dataset, batch_size=config.training.batch_size, shuffle=True,
         num_workers=config.training.num_workers, pin_memory=config.training.pin_memory,
-        persistent_workers=config.training.num_workers > 0
+        persistent_workers=config.training.num_workers > 0,
+        worker_init_fn=worker_init_fn
     )
     valid_loader = DataLoader(
         valid_dataset, batch_size=config.training.batch_size, shuffle=False,
         num_workers=config.training.num_workers, pin_memory=config.training.pin_memory,
-        persistent_workers=config.training.num_workers > 0
+        persistent_workers=config.training.num_workers > 0,
+        worker_init_fn=worker_init_fn
     )
 
     # Create model and move to device.
