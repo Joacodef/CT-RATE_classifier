@@ -68,8 +68,12 @@ logger = logging.getLogger(__name__)
 def json_serial_converter(o):
     """
     Custom JSON converter for types that are not serializable by default.
-    Handles numpy arrays, torch/numpy dtypes, and numpy RandomState objects.
+    Handles Path objects, numpy arrays, torch Tensors/dtypes, and numpy RandomState.
     """
+    if isinstance(o, Path):
+        return str(o)
+    if isinstance(o, torch.Tensor):
+        return o.tolist()
     if isinstance(o, np.ndarray):
         return o.tolist()
     if isinstance(o, (torch.dtype, np.dtype)):
@@ -97,7 +101,6 @@ def worker_init_fn(worker_id):
     
     # Replace the original torch.load with our custom version for this worker.
     torch.load = custom_load
-
 
 
 def get_transform_params(transform):
@@ -130,54 +133,37 @@ def get_transform_params(transform):
     return params
 
 
-
-def deterministic_json_hash(item):
+def deterministic_json_hash(item: dict) -> bytes:
     """
-    Creates a deterministic hash from an object by converting it to a
-    sorted JSON string. Handles MONAI transforms by inspecting their
-    parameters instead of their memory addresses.
+    Creates a deterministic hash from an object.
+    - If the item is a data dictionary from the dataset, it hashes the 'VolumeName'.
+    - If the item is a transform configuration dictionary, it hashes the entire dictionary.
     """
-    processed_item = item
-    # Check if the item is a list of MONAI transforms
-    if isinstance(item, list) and hasattr(item[0], '__class__') and "monai.transforms" in str(item[0].__class__):
-        # If it's a list of transforms, get their parameters
-        processed_item = [get_transform_params(t) for t in item]
-    
-    # Use default=str as a fallback for any other complex types
-    item_str = json.dumps(processed_item, sort_keys=True, default=str)
-    
-    # Optional: You can remove the print statement now if you want
-    # print(f"HASHING_INPUT: {item_str}")
+    # Check if the item is a data dictionary by looking for a unique key.
+    if isinstance(item, dict) and "VolumeName" in item:
+        # For data items, base the hash on the stable, unique VolumeName only.
+        item_str = str(item["VolumeName"])
+    else:
+        # For transform configurations, serialize the entire dictionary.
+        item_str = json.dumps(item, sort_keys=True, default=json_serial_converter)
 
     # The function must return bytes
     return hashlib.md5(item_str.encode('utf-8')).hexdigest().encode('utf-8')
 
 
+
 def get_or_create_cache_subdirectory(base_cache_dir: Path, transforms: Compose, split: str) -> Path:
     """
     Determines the correct cache subdirectory based on transform parameters.
-
-    This function generates a unique hash from the preprocessing transform
-    pipeline. It then checks if a subdirectory corresponding to this hash
-    already exists. If it does, the path to that directory is returned.
-    If not, it creates the subdirectory, saves the transform parameters
-    that define the cache into a JSON file for inspection, and then
-    returns the path.
-
-    Args:
-        base_cache_dir: The root directory for all caching.
-        transforms: The MONAI Compose object containing the preprocessing transforms.
-        split: The name of the data split (e.g., 'train', 'valid').
-
-    Returns:
-        The configuration-specific path for the cache directory.
+    ...
     """
-    # Generate a unique, deterministic hash from the transform parameters.
-    # The .transforms attribute of a Compose object is the list of transforms.
-    config_hash = deterministic_json_hash(transforms.transforms).decode('utf-8')
+    # First, get the complete, serializable dictionary of transform parameters.
+    transform_params = get_transform_params(transforms)
+
+    # Now, generate the hash FROM this dictionary. This ensures consistency.
+    config_hash = deterministic_json_hash(transform_params).decode('utf-8')
 
     # Construct the path for the specific cache subdirectory.
-    # e.g., /path/to/cache/train/0a1b2c3d...
     cache_path = base_cache_dir / split / config_hash
     params_file = cache_path / "cache_params.json"
 
@@ -192,25 +178,19 @@ def get_or_create_cache_subdirectory(base_cache_dir: Path, transforms: Compose, 
     logger.info(f"Creating new cache directory: {cache_path}")
     
     try:
-        # Create the subdirectory.
         cache_path.mkdir(parents=True, exist_ok=True)
-
-        # Get the human-readable parameters for saving as metadata.
-        transform_params = get_transform_params(transforms)
         
-        # Save the parameters to a JSON file for future inspection.
+        # Save the same dictionary to the JSON file.
         with open(params_file, 'w') as f:
             json.dump(transform_params, f, indent=4, default=json_serial_converter)
             
         logger.info(f"Saved cache parameters to {params_file}")
 
     except OSError as e:
-        # Handle potential race conditions or permission errors during creation.
         logger.error(f"Failed to create cache directory {cache_path}: {e}")
         raise
 
     return cache_path
-
 
 
 def create_model(config: SimpleNamespace) -> nn.Module:
