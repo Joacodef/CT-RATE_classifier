@@ -420,19 +420,11 @@ def train_model(
               (losses and metrics per epoch).
     """
     setup_torch_optimizations()  # Apply PyTorch performance optimizations.
-    
-    # Manually register MetaTensor to allow safe unpickling by PersistentDataset
-    # This is required due to recent security changes in PyTorch's torch.load
-    if not hasattr(torch.serialization, "_original_load"):
-        torch.serialization._original_load = torch.load
-    
-    def custom_load(*args, **kwargs):
-        # Ensure 'weights_only' is not passed or is False
-        kwargs.pop('weights_only', None)
-        return torch.serialization._original_load(*args, **kwargs)
-    
-    # Temporarily override torch.load to ensure we can unpickle MONAI's MetaTensor
-    torch.load = custom_load
+
+    # Manually register MetaTensor to allow safe unpickling by PersistentDataset.
+    # This is required due to security changes in PyTorch's torch.load,
+    # and directly follows the recommendation from the error message.
+    torch.serialization.add_safe_globals([MetaTensor])
     
     # Use the provided device or detect automatically.
     if device is None:
