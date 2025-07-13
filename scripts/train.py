@@ -9,15 +9,15 @@ import torch.multiprocessing
 # Set the multiprocessing sharing strategy to 'file_system' for Linux systems.
 # This is a workaround for the "Too many open files" error that can occur when
 # using the default 'file_descriptor' strategy with a large number of workers.
-# if sys.platform == "linux":
-#     try:
-#         torch.multiprocessing.set_sharing_strategy('file_system')
-#     except RuntimeError as e:
-#         # This might fail if the strategy is already set, which is fine.
-#         logging.warning(
-#             "Failed to set multiprocessing sharing strategy, it might already be set. "
-#             f"Details: {e}"
-#         )
+if sys.platform == "linux":
+    try:
+        torch.multiprocessing.set_sharing_strategy('file_system')
+    except RuntimeError as e:
+        # This might fail if the strategy is already set, which is fine.
+        logging.warning(
+            "Failed to set multiprocessing sharing strategy, it might already be set. "
+            f"Details: {e}"
+        )
 
 # Add the project root to the Python path
 project_root = Path(__file__).resolve().parents[1]
