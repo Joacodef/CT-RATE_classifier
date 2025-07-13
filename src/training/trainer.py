@@ -15,10 +15,10 @@ warnings.filterwarnings('ignore', category=UserWarning)
 # Third-party imports
 import torch
 import torch.nn as nn
-import torch.serialization
 import numpy as np
 import pandas as pd
 import wandb
+import functools
 
 # MONAI imports
 from monai.data import PersistentDataset, DataLoader, Dataset, CacheDataset 
@@ -36,7 +36,7 @@ from monai.transforms import (
     EnsureTyped,
 )
 from monai.losses import FocalLoss
-from monai.data.meta_tensor import MetaTensor
+
 
 # Internal imports - models
 from src.models.resnet3d import resnet18_3d, resnet34_3d
@@ -67,26 +67,19 @@ logger = logging.getLogger(__name__)
 def worker_init_fn(worker_id):
     """
     Initialization function for DataLoader workers.
-    
-    This function is called for each worker process. It registers all necessary
-    MONAI and NumPy classes as safe for unpickling to ensure the persistent
-    cache works correctly with modern PyTorch versions.
+
+    This function overrides torch.load within each worker process to force
+    `weights_only=False`. This is necessary to allow MONAI's PersistentDataset
+    to load cached complex objects (like MetaTensors) without triggering
+    PyTorch's stricter security checks.
     """
-    try:
-        # Add all required classes for unpickling complex MONAI MetaTensor objects.
-        # This includes the MetaTensor, the numpy array class, the numpy
-        # data type class, and the function to reconstruct numpy arrays.
-        torch.serialization.add_safe_globals(
-            [
-                MetaTensor, 
-                np.core.multiarray._reconstruct,
-                np.ndarray,
-                np.dtype
-            ]
-        )
-    except Exception as e:
-        # Log any errors during worker initialization.
-        logger.error(f"Error initializing DataLoader worker {worker_id}: {e}")
+    # Create a new version of torch.load that has weights_only=False by default.
+    custom_load = functools.partial(torch.load, weights_only=False)
+    
+    # Replace the original torch.load with our custom version for this worker.
+    torch.load = custom_load
+
+
 def get_transform_params(transform):
     """
     Recursively get the parameters of a MONAI transform object
