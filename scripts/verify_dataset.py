@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
+import functools
 
 import pandas as pd
 import torch
@@ -54,6 +55,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 disable_progress_bars()
 
+logger.info("Applying global patch to torch.load to allow MetaTensor deserialization.")
+torch.load = functools.partial(torch.load, weights_only=False)
 
 # --- Core Script Functions ---
 
