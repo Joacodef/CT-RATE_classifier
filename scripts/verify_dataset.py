@@ -143,7 +143,7 @@ def precache_dataset(config: SimpleNamespace, num_shards: int, shard_id: int):
             continue
 
         shard_df = full_df.iloc[start_index:end_index]
-        logger.info(f"Processing {len(shard_df)} files from index {start_index} to {end_index}.")
+        logger.info(f"[Shard {shard_id + 1}/{num_shards}] Processing {len(shard_df)} files from index {start_index} to {end_index}.")
 
         base_ds = CTMetadataDataset(
             dataframe=shard_df, img_dir=img_dir,
@@ -152,7 +152,7 @@ def precache_dataset(config: SimpleNamespace, num_shards: int, shard_id: int):
         
         # --- New, Simpler Verification Logic ---
         corrupt_items = []
-        logger.info("Verifying all files in the shard. This will be fast for cached items.")
+        logger.info(f"[Shard {shard_id + 1}/{num_shards}] Verifying all files in the shard. This will be fast for cached items.")
         
         # We pass a simple "check" transform to PersistentDataset.
         # This forces it to load each item, which is fast for cached files.
@@ -177,24 +177,26 @@ def precache_dataset(config: SimpleNamespace, num_shards: int, shard_id: int):
             hash_func=deterministic_json_hash, hash_transform=deterministic_json_hash
         )
 
-        for i in tqdm(range(len(verifying_ds)), desc=f"Verifying {split} shard"):
+        for i in tqdm(range(len(verifying_ds)), desc=f"Verifying {split} (Shard {shard_id + 1}/{num_shards})"):
             try:
                 # Accessing the item triggers the transform and caching logic.
                 _ = verifying_ds[i]
             except Exception as e:
                 # If an error occurs, the file is corrupt.
-                vol_name = base_ds[i].get("VolumeName", "Unknown")
-                logger.error(f"\nDetected corrupt file: {vol_name} | Reason: {e}")
+                vol_name = base_ds[i].get("volume_name", "Unknown")
+                logger.error(
+                    f"\n[Shard {shard_id + 1}/{num_shards}] Detected corrupt file while analyzing '{vol_name}'. Reason: {e}"
+                )
                 corrupt_items.append(vol_name)
         
         corrupt_files_summary[split] = corrupt_items
     
-    logger.info("\n--- Verification and Caching Summary ---")
+    logger.info(f"\n--- Verification and Caching Summary (Shard {shard_id + 1}/{num_shards}) ---")
     total_corrupt = sum(len(v) for v in corrupt_files_summary.values())
     if total_corrupt == 0:
-        logger.info("All files in this shard were verified successfully!")
+        logger.info(f"All files in Shard {shard_id + 1} were verified successfully!")
     else:
-        logger.warning(f"Found {total_corrupt} corrupt files in this shard:")
+        logger.warning(f"Found {total_corrupt} corrupt files in Shard {shard_id + 1}:")
         for split, files in corrupt_files_summary.items():
             if files:
                 logger.warning(f"  {split.capitalize()} split:")
