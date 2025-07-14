@@ -607,16 +607,16 @@ def train_model(
     )
 
     augment_transforms = Compose([
-        # GPU-accelerated spatial augmentations
+        # Spatial augmentations (Potentially GPU-based)
         RandAffined(
             keys="image",
-            prob=0.6,  # Apply this transform 90% of the time
+            prob=0.1, 
             rotate_range=(np.pi / 12, np.pi / 12, np.pi / 12), # Rotate by +/- 15 degrees
             scale_range=((0.85, 1.15), (0.85, 1.15), (0.85, 1.15)), # Zoom in/out by 15%
             translate_range=((-20, 20), (-20, 20), (0, 0)), # Translate on H and W axes
             mode="bilinear",
             padding_mode="zeros",
-            device=device 
+            device="cpu" 
         ),
         # CPU-based intensity augmentations
         RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.01),

@@ -115,7 +115,6 @@ def main():
 
 if __name__ == "__main__":
     # Set the start method to 'spawn' for CUDA compatibility in multiprocessing.
-    # This must be done within the `if __name__ == '__main__':` block.
     # 'spawn' is required for using CUDA in subprocesses.
-    torch.multiprocessing.set_start_method('spawn', force=True)
+    # torch.multiprocessing.set_start_method('spawn', force=True)
     main()
