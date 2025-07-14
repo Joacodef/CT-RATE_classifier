@@ -48,7 +48,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(log_file_path, mode='w'),
+        logging.FileHandler(log_file_path, mode='a'),
         logging.StreamHandler(sys.stdout)
     ]
 )
