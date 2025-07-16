@@ -26,14 +26,26 @@ paths:
   labels:
     train: "labels/multi_abnormality_labels/train_predicted_labels.csv"
     valid: "labels/multi_abnormality_labels/valid_predicted_labels.csv"
+    all: "labels/multi_abnormality_labels/all_predicted_labels.csv"
   reports:
     train: "radiology_text_reports/train_reports.csv"
     valid: "radiology_text_reports/valid_reports.csv"
+    all: "radiology_text_reports/all_reports.csv"
   metadata:
     train: "metadata/train_metadata.csv"
     valid: "metadata/valid_metadata.csv"
+    all: "metadata/all_metadata.csv"
 
   output_dir: "output"
+
+  # Paths to files that contain volumes to be excluded from the dataset
+  exclusion_files:
+    manual_labels: "all_manual_labels.csv"
+    brain_scans: "brain_scans.txt" 
+    missing_z: "missing_z_space.txt" 
+  
+  # Define the name for the output file
+  output_filename: "filtered_master_list.csv"
 
 # --- Model Configuration ---
 model:
@@ -63,7 +75,7 @@ training:
   gradient_accumulation_steps: 4
   learning_rate: 1.0e-4
   weight_decay: 0.01
-  num_workers: 0
+  num_workers: 2
   pin_memory: true
   augment: true
   prefetch_factor: 2  # Number of batches to prefetch in DataLoader
@@ -122,3 +134,15 @@ wandb:
   # The 'resume' option allows interrupted runs to be continued. 
   # 'allow' is a safe default.
   resume: "allow"
+
+
+# --- Download Configuration ---
+downloads:
+  # The Hugging Face token is loaded from the .env file
+  hf_token: ${HF_TOKEN}
+  # Hugging Face repository ID for the dataset
+  repo_id: "ibrahimhamamci/CT-RATE"
+  # Directory to use for Hugging Face's own cache
+  hf_cache_dir: "./hf_cache"
+  # Number of parallel download workers
+  max_workers: 8
