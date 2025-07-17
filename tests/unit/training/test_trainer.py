@@ -23,12 +23,13 @@ sys.path.append(str(project_root))
 from src.training.trainer import (
     create_model,
     load_and_prepare_data,
-    train_model
+    train_model,
+    deterministic_json_hash,
+    worker_init_fn
 )
 from src.models.resnet3d import resnet18_3d
 from src.models.densenet3d import densenet121_3d
 from src.models.vit3d import vit_small_3d
-from src.training.trainer import deterministic_json_hash, worker_init_fn
 
 
 # --- Fixtures ---
@@ -38,7 +39,9 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
     """Creates a mock SimpleNamespace config object for testing."""
     output_dir = tmp_path / "test_output"
     output_dir.mkdir()
-    
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
     # Create nested namespaces to mimic the real config structure
     config = SimpleNamespace(
         model=SimpleNamespace(
@@ -49,17 +52,20 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
         paths=SimpleNamespace(
             output_dir=output_dir,
             cache_dir=output_dir / "cache",
-            data_dir=tmp_path / "data",
-            train_img_dir=tmp_path / "data" / "train",
-            valid_img_dir=tmp_path / "data" / "valid",
+            data_dir=data_dir,
+            # This is the key change: a single, unified image directory
+            img_dir=data_dir / "images",
             dir_structure="flat",
             data_subsets=SimpleNamespace(
-                train=tmp_path / "train_vols.csv",
-                valid=tmp_path / "valid_vols.csv"
+                train=data_dir / "train_vols.csv",
+                valid=data_dir / "valid_vols.csv"
             ),
+            # This is the key change: added the 'all' attribute
             labels=SimpleNamespace(
-                train=tmp_path / "train_labels.csv",
-                valid=tmp_path / "valid_labels.csv"
+                all=data_dir / "all_labels.csv",
+                # The 'train' and 'valid' labels are now legacy but kept for non-breaking tests
+                train=data_dir / "train_labels.csv",
+                valid=data_dir / "valid_labels.csv"
             )
         ),
         pathologies=SimpleNamespace(columns=["Cardiomegaly", "Atelectasis"]),
@@ -75,14 +81,13 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
             focal_loss=SimpleNamespace(alpha=0.25, gamma=2.0)
         ),
         training=SimpleNamespace(
-            num_epochs=3,
+            num_epochs=2, # Reduced for faster tests
             batch_size=2,
             learning_rate=1e-4,
             weight_decay=1e-5,
             num_workers=0,
             pin_memory=False,
-            early_stopping_patience=2,
-            early_stopping_metric='roc_auc_macro',
+            early_stopping_patience=3, # Prevent early stop
             resume_from_checkpoint=None,
             gradient_accumulation_steps=1,
             augment=True,
@@ -97,9 +102,10 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
             use_cache=False,
             memory_rate=0.0,
         ),
-        # Added: wandb config to prevent attribute error during tests
         wandb=SimpleNamespace(enabled=False, project=None, run_name=None, resume=None, group=None)
     )
+    # Create the unified image directory
+    config.paths.img_dir.mkdir(exist_ok=True)
     return config
 
 
@@ -138,29 +144,25 @@ class TestLoadAndPrepareData:
     @pytest.fixture
     def setup_mock_csv_files(self, mock_config):
         """Helper to create mock CSV files for testing."""
-        # Create dummy CSV files
+        # Create dummy volume lists for the split
         pd.DataFrame({'VolumeName': [f'vol_{i}' for i in range(5)]}).to_csv(
             mock_config.paths.data_subsets.train, index=False
         )
         pd.DataFrame({'VolumeName': [f'vol_{i}' for i in range(5, 8)]}).to_csv(
             mock_config.paths.data_subsets.valid, index=False
         )
-        train_labels = pd.DataFrame({
-            'VolumeName': [f'vol_{i}' for i in range(5)],
-            'Cardiomegaly': [1, 0, 1, 0, 1],
-            'Atelectasis': [0, 1, 1, 0, 0]
+
+        # Create the unified 'all_labels.csv' file
+        all_labels = pd.DataFrame({
+            'VolumeName': [f'vol_{i}' for i in range(8)],
+            'Cardiomegaly': [1, 0, 1, 0, 1, 1, 0, 0],
+            'Atelectasis': [0, 1, 1, 0, 0, 0, 1, 1]
         })
-        train_labels.to_csv(mock_config.paths.labels.train, index=False)
-        
-        valid_labels = pd.DataFrame({
-            'VolumeName': [f'vol_{i}' for i in range(5, 8)],
-            'Cardiomegaly': [1, 0, 0],
-            'Atelectasis': [0, 1, 1]
-        })
-        valid_labels.to_csv(mock_config.paths.labels.valid, index=False)
+        all_labels.to_csv(mock_config.paths.labels.all, index=False)
 
 
     def test_successful_loading(self, mock_config, setup_mock_csv_files):
+        """Tests that data is correctly split and merged from unified labels."""
         train_df, valid_df = load_and_prepare_data(mock_config)
         assert not train_df.empty
         assert not valid_df.empty
@@ -168,12 +170,18 @@ class TestLoadAndPrepareData:
         assert len(valid_df) == 3
         assert 'Cardiomegaly' in train_df.columns
         assert train_df['Cardiomegaly'].dtype == int
+        # Check that the correct volumes are in each dataframe
+        assert train_df['VolumeName'].tolist() == [f'vol_{i}' for i in range(5)]
+        assert valid_df['VolumeName'].tolist() == [f'vol_{i}' for i in range(5, 8)]
 
     def test_missing_csv_raises_error(self, mock_config):
+        """Tests that a FileNotFoundError is raised if any CSV is missing."""
+        # Intentionally do not call setup_mock_csv_files
         with pytest.raises(FileNotFoundError):
             load_and_prepare_data(mock_config)
 
     def test_empty_dataframe_raises_error(self, mock_config, setup_mock_csv_files):
+        """Tests that a ValueError is raised if a split results in an empty dataframe."""
         # Create an empty volume list to cause an empty merged dataframe
         pd.DataFrame({'VolumeName': []}).to_csv(
             mock_config.paths.data_subsets.train, index=False
@@ -215,8 +223,6 @@ class TestTrainModel:
         # --- Config Setup ---
         mock_config.cache.use_cache = use_cache
         mock_config.training.augment = True
-        mock_config.training.num_epochs = 2 # Use a smaller number for faster tests
-        mock_config.training.early_stopping_patience = 3 # Prevent early stopping
 
         # --- Mock Return Values Setup ---
         mock_load_data.return_value = (
@@ -252,12 +258,19 @@ class TestTrainModel:
             mock_final_train_ds, mock_final_valid_ds = MagicMock(), MagicMock()
             mock_monai_dataset.side_effect = [mock_final_train_ds, mock_final_valid_ds]
 
-        # --- EXECUTION (Call train_model only ONCE) ---
+        # --- EXECUTION ---
         train_model(mock_config)
 
         # --- ASSERTIONS ---
         mock_load_data.assert_called_once_with(mock_config)
         mock_create_model.assert_called_once_with(mock_config)
+        
+        # Check that CTMetadataDataset was called correctly with the unified img_dir
+        mock_ctmetadata_dataset.assert_has_calls([
+            call(dataframe=ANY, img_dir=mock_config.paths.img_dir, pathology_columns=ANY, path_mode=ANY),
+            call(dataframe=ANY, img_dir=mock_config.paths.img_dir, pathology_columns=ANY, path_mode=ANY)
+        ])
+
         assert mock_train_epoch.call_count == mock_config.training.num_epochs
         
         if use_cache:
@@ -267,6 +280,7 @@ class TestTrainModel:
                 call(data=mock_base_valid_ds, transform=ANY, cache_dir=mock_valid_cache_path, 
                      hash_func=deterministic_json_hash, hash_transform=deterministic_json_hash)
             ])
+            # For the augmented dataloader call
             mock_dataloader.assert_has_calls([
                 call(mock_augmented_train, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn),
                 call(mock_cached_valid, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn)

@@ -407,7 +407,7 @@ def train_model(
             logger.error(f"Failed to initialize Weights & Biases: {e}. Training will continue without wandb logging.")
 
     # Ensure output directory exists.
-    output_dir = Path(config.paths.output_dir).resolve()
+    output_dir = Path(config.paths.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load and prepare data.
