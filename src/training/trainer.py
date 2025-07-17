@@ -139,12 +139,13 @@ def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.Dat
     """
     logger.info("Loading DataFrames for the current data split...")
     try:
+        data_dir = Path(config.paths.data_dir).resolve()
         # Load the volume lists for the current training and validation split
-        train_volumes = pd.read_csv(config.paths.data_subsets.train)[['VolumeName']]
-        valid_volumes = pd.read_csv(config.paths.data_subsets.valid)[['VolumeName']]
+        train_volumes = pd.read_csv(Path(data_dir) / config.paths.data_subsets.train)[['VolumeName']]
+        valid_volumes = pd.read_csv(Path(data_dir) / config.paths.data_subsets.valid)[['VolumeName']]
         
         # Load the single, unified labels file for all volumes
-        all_labels = pd.read_csv(config.paths.labels.all)
+        all_labels = pd.read_csv(Path(data_dir) / config.paths.full_dataset_csv)
         
         # Merge the split volumes with the unified labels file
         train_df = pd.merge(train_volumes, all_labels, on='VolumeName', how='inner')
