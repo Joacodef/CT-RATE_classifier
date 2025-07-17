@@ -83,8 +83,7 @@ def load_config(config_path: str | Path) -> SimpleNamespace:
 
     # 4. Resolve and process paths
     cfg.paths.base_project_dir = Path(cfg.paths.base_project_dir).resolve()
-    cfg.paths.train_img_dir = Path(cfg.paths.train_img_dir).resolve()
-    cfg.paths.valid_img_dir = Path(cfg.paths.valid_img_dir).resolve()
+    cfg.paths.img_dir = Path(cfg.paths.img_dir).resolve()
     cfg.paths.cache_dir = Path(cfg.paths.cache_dir).resolve()
 
     cfg.paths.output_dir = Path(cfg.paths.output_dir).resolve()
