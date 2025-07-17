@@ -406,7 +406,8 @@ def train_model(
             logger.error(f"Failed to initialize Weights & Biases: {e}. Training will continue without wandb logging.")
 
     # Ensure output directory exists.
-    config.paths.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(config.paths.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load and prepare data.
     train_df, valid_df = load_and_prepare_data(config)
@@ -690,14 +691,14 @@ def train_model(
                 logger.error(f"Failed to log metrics to wandb: {e}")
 
         # Save training history to JSON.
-        history_path = config.paths.output_dir / 'training_history.json'
+        history_path = output_dir / 'training_history.json'
         with open(history_path, 'w') as f: json.dump(history, f, indent=2)
 
         # Check for best model based on validation ROC AUC macro.
         current_auc = metrics_for_loop.get('roc_auc_macro', 0.0)
         if current_auc > best_auc:
             best_auc = current_auc
-            best_model_path = config.paths.output_dir / 'best_model.pth'
+            best_model_path = output_dir / 'best_model.pth'
             save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, best_model_path)
             logger.info(f"New best model saved with AUC: {best_auc:.4f}")
         
@@ -707,7 +708,7 @@ def train_model(
             break  # Exit training loop.
             
         # Save last checkpoint.
-        last_checkpoint_path = config.paths.output_dir / 'last_checkpoint.pth'
+        last_checkpoint_path = output_dir / 'last_checkpoint.pth'
         save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, last_checkpoint_path)
 
 
@@ -721,12 +722,12 @@ def train_model(
     final_metrics_to_save = history['metrics'][-1] if history['metrics'] else {}
 
     # Save the final model state.
-    final_model_path = config.paths.output_dir / 'final_model.pth'
+    final_model_path = output_dir / 'final_model.pth'
     last_trained_epoch = epoch if 'epoch' in locals() else start_epoch -1
     save_checkpoint(model, optimizer, scaler, last_trained_epoch, final_metrics_to_save, final_model_path)
 
     # Save final training history.
-    history_path = config.paths.output_dir / 'training_history.json'
+    history_path = output_dir / 'training_history.json'
     with open(history_path, 'w') as f: json.dump(history, f, indent=2)
 
     logger.info(f"\nTraining completed!")
