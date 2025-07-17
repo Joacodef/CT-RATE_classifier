@@ -200,14 +200,16 @@ def main(config_path: str, generate_cache: bool, num_shards: int, shard_id: int)
     config = load_config(config_path)
 
     # Use the unified full_dataset_csv for all operations
-    full_dataset_path = Path(config.paths.data_dir) / config.paths.full_dataset_csv
+    full_dataset_path = Path(config.paths.data_dir) / config.paths.data_subsets.train
+
+    logger.info(f"Using dataset CSV at: {full_dataset_path}")
 
     if not generate_cache:
         all_missing_files = find_missing_files(
             full_dataset_path, config.paths.img_dir, config.paths.dir_structure
         )
         if all_missing_files:
-            logger.info(f"\nFound {len(all_missing_files)} total missing files.")
+            logger.info(f"\nFound {len(all_missing_files)} total missing files.")            
             try:
                 if input("Do you want to download them? (Y/N): ").strip().lower() == 'y':
                     task = partial(download_worker, config=config)

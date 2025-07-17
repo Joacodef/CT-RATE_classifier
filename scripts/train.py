@@ -50,7 +50,7 @@ def main():
     parser.add_argument(
         "--fold",
         type=int,
-        default=0,
+        default=None,
         help="The specific fold number to train (e.g., 0, 1, 2...).\n"
              "If not provided, the script uses the default paths in the config file."
     )
