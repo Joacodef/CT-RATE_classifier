@@ -1,6 +1,7 @@
 import pandas as pd
 import logging
 from pathlib import Path
+import re
 
 # --- Configuration ---
 BASE_DATA_DIR = Path("E:/ProyectoRN/data") 
@@ -28,10 +29,17 @@ def normalize_name_from_path(path_str: str) -> str:
     """
     if not isinstance(path_str, str) or not path_str:
         return ""
-    # Extract the base filename from the path
     filename = Path(path_str).name
-    # Clean and return it
     return filename.replace(".nii.gz", "").replace(".nii", "").strip()
+
+def natural_sort_key(s: str):
+    """
+    Creates a key for natural sorting.
+    "train_10_a_1" -> ["train_", 10, "_a_", 1]
+    "train_2_a_1" -> ["train_", 2, "_a_", 1]
+    Python then correctly sorts 2 before 10.
+    """
+    return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
 
 def create_filtered_dataset():
     """
@@ -45,7 +53,6 @@ def create_filtered_dataset():
         train_df = pd.read_csv(TRAIN_METADATA_PATH)
         valid_df = pd.read_csv(VALID_METADATA_PATH)
         all_volumes_df = pd.concat([train_df, valid_df], ignore_index=True)
-        # Get a clean, unique list of the original VolumeNames
         all_volume_names_raw = all_volumes_df['VolumeName'].dropna().unique().tolist()
         logger.info(f"Loaded {len(all_volume_names_raw)} unique raw volume names from metadata.")
     except FileNotFoundError as e:
@@ -53,8 +60,6 @@ def create_filtered_dataset():
         return
 
     # --- 2. Load EXCLUSION lists ---
-    
-    # Load lists for EXACT match (brain scans, missing z)
     exact_match_exclusions = set()
     try:
         with open(BRAIN_SCANS_PATH, 'r') as f:
@@ -74,11 +79,9 @@ def create_filtered_dataset():
     
     logger.info(f"Total unique volumes for exact-match exclusion: {len(exact_match_exclusions)}")
 
-    # Load list for PREFIX match (manual labels)
     manual_label_prefixes = set()
     try:
         manual_exclude_df = pd.read_csv(MANUAL_LABELS_PATH)
-        # Prefixes should just be stripped of whitespace
         manual_label_prefixes = {name.strip() for name in manual_exclude_df['VolumeName'].dropna()}
         logger.info(f"Loaded {len(manual_label_prefixes)} prefixes for prefix-based exclusion.")
     except FileNotFoundError:
@@ -92,30 +95,29 @@ def create_filtered_dataset():
     prefixes_tuple = tuple(manual_label_prefixes) if manual_label_prefixes else None
 
     for raw_name in all_volume_names_raw:
-        # Normalize the name from the main list for the exact-match check
         normalized_name_for_check = normalize_name_from_path(raw_name)
 
-        # Check 1: Is the normalized name in the exact-match exclusion set?
         if normalized_name_for_check in exact_match_exclusions:
             removed_by_exact += 1
-            continue  # Skip this name and do not check the next condition
+            continue
 
-        # Check 2 (only if Check 1 failed): Does the raw name start with an exclusion prefix?
         if prefixes_tuple and raw_name.startswith(prefixes_tuple):
             removed_by_prefix += 1
-            continue  # Skip this name
+            continue
 
-        # If the name passes all checks, keep it
         final_filtered_list.append(raw_name)
 
     logger.info(f"Removed {removed_by_exact} volumes by exact match.")
     logger.info(f"Removed {removed_by_prefix} volumes by prefix match (from the remainder).")
     
     # --- 4. Final Count and Save ---
-    final_filtered_list.sort()
+    
+    # Sort the list using the natural sort key
+    final_filtered_list.sort(key=natural_sort_key)
+    logger.info("Final list sorted numerically.")
+    
     logger.info(f"Total volumes remaining after all filtering: {len(final_filtered_list)}")
     
-    # Verification step
     expected_final_count = len(all_volume_names_raw) - removed_by_exact - removed_by_prefix
     logger.info(f"Verification: {len(all_volume_names_raw)} - {removed_by_exact} - {removed_by_prefix} = {expected_final_count}")
     if len(final_filtered_list) != expected_final_count:

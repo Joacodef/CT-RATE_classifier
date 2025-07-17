@@ -124,7 +124,7 @@ def get_or_create_cache_subdirectory(base_cache_dir: Path, transforms: Compose, 
     config_hash = deterministic_json_hash(transform_params).decode('utf-8')
 
     # Construct the path for the specific cache subdirectory.
-    cache_path = base_cache_dir / split / config_hash
+    cache_path = base_cache_dir / config_hash
     params_file = cache_path / "cache_params.json"
 
     # If the specific cache directory already exists, use it.
