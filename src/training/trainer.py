@@ -146,6 +146,7 @@ def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.Dat
         
         # Load the single, unified labels file for all volumes
         all_labels = pd.read_csv(Path(data_dir) / config.paths.full_dataset_csv)
+        logger.info(f"Loaded {len(all_labels)} total labels from the unified labels file at {config.paths.full_dataset_csv}")
         
         # Merge the split volumes with the unified labels file
         train_df = pd.merge(train_volumes, all_labels, on='VolumeName', how='inner')
