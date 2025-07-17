@@ -23,18 +23,22 @@ if sys.platform == "linux":
 project_root = Path(__file__).resolve().parents[1]
 sys.path.append(str(project_root))
 
+logger = logging.getLogger(__name__)
+
 from src.config import load_config
 from src.training.trainer import train_model
 from src.utils.logging_config import setup_logging
 from src.training.utils import find_latest_checkpoint
 
+# scripts/train.py
+
 def main():
     """
-    Main function to start or resume the training process.
+    Main function to start or resume the training process for a specific fold.
     It loads a base configuration and allows for overrides via command-line arguments.
     """
     parser = argparse.ArgumentParser(
-        description="Run the training pipeline.",
+        description="Run the training pipeline for a specific cross-validation fold.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
@@ -42,6 +46,13 @@ def main():
         type=str,
         required=True,
         help="Path to the base YAML configuration file.",
+    )
+    parser.add_argument(
+        "--fold",
+        type=int,
+        default=None,
+        help="The specific fold number to train (e.g., 0, 1, 2...).\n"
+             "If not provided, the script uses the default paths in the config file."
     )
     parser.add_argument(
         '--model-type',
@@ -72,7 +83,7 @@ def main():
     # 1. Load the base configuration
     config = load_config(args.config)
 
-    # 2. Override config with command-line arguments
+    # 2. Override config with command-line arguments if provided
     if args.model_type:
         logging.info(f"Overriding model.type from '{config.model.type}' to '{args.model_type}'")
         config.model.type = args.model_type
@@ -81,17 +92,41 @@ def main():
         logging.info(f"Overriding model.variant from '{config.model.variant}' to '{args.model_variant}'")
         config.model.variant = args.model_variant
 
-    # 3. Handle resume logic
+    # 3. Dynamically set paths based on the specified fold
+    if args.fold is not None:
+        logger.info(f"Running training for fold: {args.fold}")
+        
+        # Get the directory where fold splits are stored
+        # Assumes the original config path is something like '.../train_fold_0.csv'
+        original_train_path = Path(config.paths.data_subsets.train)
+        folds_dir = original_train_path.parent
+
+        # Update the train and validation paths for the specific fold
+        config.paths.data_subsets.train = str(folds_dir / f"train_fold_{args.fold}.csv")
+        config.paths.data_subsets.valid = str(folds_dir / f"valid_fold_{args.fold}.csv")
+        logger.info(f"Using training data: {config.paths.data_subsets.train}")
+        logger.info(f"Using validation data: {config.paths.data_subsets.valid}")
+
+        # Modify the output directory to be fold-specific
+        # This prevents folds from overwriting each other's checkpoints and logs
+        base_output_dir = Path(config.paths.output_dir)
+        config.paths.output_dir = str(base_output_dir / f"fold_{args.fold}")
+        logger.info(f"Output will be saved to: {config.paths.output_dir}")
+
+    # 4. Handle resume logic
     if args.resume is not None:
         checkpoint_path = None
+        # The output_dir has already been updated to the fold-specific one
+        output_dir = Path(config.paths.output_dir)
+        
         if args.resume is True:
-            # Automatic resume: find the latest checkpoint
-            logging.info("Attempting to resume from the latest checkpoint...")
-            checkpoint_path = find_latest_checkpoint(config.paths.output_dir)
+            # Automatic resume: find the latest checkpoint in the fold's output directory
+            logging.info(f"Attempting to resume from the latest checkpoint in {output_dir}...")
+            checkpoint_path = find_latest_checkpoint(output_dir)
             if not checkpoint_path:
                 logging.warning(
-                    f"Automatic resume failed: no checkpoint found in {config.paths.output_dir}. "
-                    "Starting a new training session."
+                    f"Automatic resume failed: no checkpoint found in {output_dir}. "
+                    "Starting a new training session for this fold."
                 )
         else:
             # Specific resume: use the provided path
@@ -105,12 +140,12 @@ def main():
             config.training.resume_from_checkpoint = str(checkpoint_path)
             logging.info(f"Training will resume from: {checkpoint_path}")
 
-    # 4. Setup logging and start training
-    log_dir = config.paths.output_dir
+    # 5. Setup logging and start training
+    log_dir = Path(config.paths.output_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    setup_logging(log_file=log_dir / 'ct_3d_training.log')
+    setup_logging(log_file=log_dir / 'training.log')
     
-    logging.info("Configuration loaded and processed. Starting training.")
+    logging.info(f"Configuration for fold {args.fold} loaded and processed. Starting training.")
     train_model(config)
 
 if __name__ == "__main__":

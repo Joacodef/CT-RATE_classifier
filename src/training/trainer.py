@@ -120,92 +120,59 @@ def create_model(config: SimpleNamespace) -> nn.Module:
 
 
 def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Load and prepare training and validation dataframes.
+    """Load and prepare training and validation dataframes from unified sources.
 
-    This function reads volume and label CSVs, merges them, handles missing
-    pathology columns by filling with 0, and converts pathology columns to integers.
-    It also logs dataset statistics.
+    This function reads volume lists for a specific data split (e.g., a fold)
+    and merges them with a unified, master labels file. It handles missing
+    pathology columns by filling with 0 and converts them to integers.
 
     Args:
-        config: Configuration object containing paths to data CSVs and pathology information.
+        config: Configuration object containing paths and pathology information.
 
     Returns:
         A tuple containing two pandas DataFrames: (train_df, valid_df).
 
     Raises:
         FileNotFoundError: If any of the required CSV files are not found.
-        RuntimeError: If there is an error during data loading (excluding FileNotFoundError).
-        ValueError: If training or validation dataframes are empty after loading,
-                    or if essential pathology columns are missing.
+        RuntimeError: If there is an error during data loading.
+        ValueError: If dataframes are empty or essential columns are missing.
     """
-    logger.info("Loading DataFrames...")
+    logger.info("Loading DataFrames for the current data split...")
     try:
-        # Load volume lists and label data using resolved paths from config
-        
+        # Load the volume lists for the current training and validation split
         train_volumes = pd.read_csv(config.paths.data_subsets.train)[['VolumeName']]
         valid_volumes = pd.read_csv(config.paths.data_subsets.valid)[['VolumeName']]
         
-        # Check if we need to filter training data using a subset file
-        if hasattr(config.paths, 'train_subset_path') and config.paths.train_subset_path:
-            subset_path = config.paths.train_subset_path
-            if subset_path.exists():
-                logger.info(f"Applying training subset filter from: {subset_path}")
-                original_count = len(train_volumes)
-                
-                # Load the subset file containing filtered VolumeNames
-                subset_df = pd.read_csv(subset_path)[['VolumeName']]
-                
-                # Filter train_volumes to only include VolumeNames in the subset
-                train_volumes = train_volumes[train_volumes['VolumeName'].isin(subset_df['VolumeName'])]
-                
-                filtered_count = len(train_volumes)
-                logger.info(f"Training data filtered from {original_count} to {filtered_count} volumes "
-                          f"({filtered_count/original_count*100:.1f}% of original)")
-                
-                # Validate that we still have data after filtering
-                if train_volumes.empty:
-                    raise ValueError(f"No matching VolumeNames found between subset file and training volumes")
-            else:
-                logger.warning(f"Subset path specified but file not found: {subset_path}. Using full training set.")
+        # Load the single, unified labels file for all volumes
+        all_labels = pd.read_csv(config.paths.labels.all)
         
-        train_labels = pd.read_csv(config.paths.labels.train)
-        valid_labels = pd.read_csv(config.paths.labels.valid)
-        # Merge volumes with labels.
-        train_df = pd.merge(train_volumes, train_labels, on='VolumeName', how='inner')
-        valid_df = pd.merge(valid_volumes, valid_labels, on='VolumeName', how='inner')
+        # Merge the split volumes with the unified labels file
+        train_df = pd.merge(train_volumes, all_labels, on='VolumeName', how='inner')
+        valid_df = pd.merge(valid_volumes, all_labels, on='VolumeName', how='inner')
+        
     except FileNotFoundError as e:
-        # Handle missing file errors.
         logger.error(f"Required CSV file not found: {e}")
         raise FileNotFoundError(f"Required CSV file not found: {e}")
     except Exception as e:
-        # Handle other data loading errors.
         logger.error(f"Error loading data: {e}")
         raise RuntimeError(f"Error loading data: {e}")
 
-    # Validate that dataframes are not empty.
+    # Validate that dataframes are not empty
     if train_df.empty or valid_df.empty:
         logger.error("Training or validation dataframe is empty after loading and merging.")
         raise ValueError("Training or validation dataframe is empty")
 
-    # Check for missing pathology columns and fill NaNs.
+    # Check for missing pathology columns and fill NaNs
     for df, name in [(train_df, "training"), (valid_df, "validation")]:
         missing_cols = [col for col in config.pathologies.columns if col not in df.columns]
-      
         if missing_cols:
             logger.error(f"Missing pathology columns in {name} data: {missing_cols}")
             raise ValueError(f"Missing pathology columns in {name} data: {missing_cols}")
-        # Fill NaN values with 0 for pathology columns.
+        
         df[config.pathologies.columns] = df[config.pathologies.columns].fillna(0)
-        # Ensure pathology columns are of integer type.
         df[config.pathologies.columns] = df[config.pathologies.columns].astype(int)
 
     logger.info(f"Data loaded: {len(train_df)} training, {len(valid_df)} validation samples")
-    # Log positive class distribution for each pathology.
-    for pathology in config.pathologies.columns:
-        train_pos = train_df[pathology].sum()
-        valid_pos = valid_df[pathology].sum()
-        logger.info(f"{pathology}: {train_pos}/{len(train_df)} train positive, "
-                   f"{valid_pos}/{len(valid_df)} valid positive")
     return train_df, valid_df
 
 
@@ -463,13 +430,14 @@ def train_model(
     # Create the base metadata datasets
     base_train_ds = CTMetadataDataset(
         dataframe=train_df,
-        img_dir=config.paths.train_img_dir,
+        img_dir=config.paths.img_dir,
         pathology_columns=config.pathologies.columns,
         path_mode=config.paths.dir_structure
     )
+    # Both datasets point to the same unified image directory.
     base_valid_ds = CTMetadataDataset(
         dataframe=valid_df,
-        img_dir=config.paths.valid_img_dir,
+        img_dir=config.paths.img_dir,
         pathology_columns=config.pathologies.columns,
         path_mode=config.paths.dir_structure
     )

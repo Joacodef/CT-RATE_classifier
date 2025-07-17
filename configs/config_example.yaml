@@ -11,8 +11,7 @@
 # Other paths can be defined relative to the BASE_PROJECT_DIR.
 paths:
   # These top-level paths should correspond to your .env file
-  train_img_dir: ${TRAIN_IMG_DIR}
-  valid_img_dir: ${VALID_IMG_DIR}
+  img_dir: ${IMG_DIR}
   base_project_dir: ${BASE_PROJECT_DIR}
   cache_dir: ${CACHE_DIR}
   data_dir: ${DATA_DIR}
@@ -20,9 +19,10 @@ paths:
   dir_structure: "nested" # Options: "flat", "nested"
 
   # These paths are relative to the base_project_dir
+  full_dataset_csv: "FILTERED_MASTER_LIST.csv"
   data_subsets:
-    train: "splits/tiny_split/train.csv"
-    valid: "splits/tiny_split/valid.csv"
+    train: "labels/multi_abnormality_labels/train_predicted_labels.csv"
+    valid: "labels/multi_abnormality_labels/valid_predicted_labels.csv"
   labels:
     train: "labels/multi_abnormality_labels/train_predicted_labels.csv"
     valid: "labels/multi_abnormality_labels/valid_predicted_labels.csv"
@@ -50,7 +50,7 @@ paths:
 # --- Model Configuration ---
 model:
   type: "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d"
-  variant: "small"      # Options depend on model type (e.g., "18", "121", "base")
+  variant: "tiny"      # Options depend on model type (e.g., "18", "121", "base")
 
   # Vision Transformer specific settings (only used if model.type == "vit3d")
   vit_specific:
@@ -75,7 +75,7 @@ training:
   gradient_accumulation_steps: 4
   learning_rate: 1.0e-4
   weight_decay: 0.01
-  num_workers: 2
+  num_workers: 4
   pin_memory: true
   augment: true
   prefetch_factor: 2  # Number of batches to prefetch in DataLoader
@@ -99,7 +99,7 @@ image_processing:
 # --- Cache Configuration ---
 cache:
   use_cache: true
-  memory_rate: 0.1
+  memory_rate: 0.0
 
 # --- Pathology Labels ---
 # The list of all pathology classes the model will predict.
