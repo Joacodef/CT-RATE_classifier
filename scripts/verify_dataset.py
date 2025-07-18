@@ -33,7 +33,7 @@ try:
     from src.data.utils import get_dynamic_image_path
     from src.data.cache_utils import (
         get_or_create_cache_subdirectory,
-        deterministic_json_hash,
+        md5_hasher,
         worker_init_fn  # Import the worker_init_fn
     )
 except ImportError as e:
@@ -78,8 +78,8 @@ class VerifyingDataset(torch.utils.data.Dataset):
             data=base_dataset,
             transform=transform,
             cache_dir=cache_dir,
-            hash_func=deterministic_json_hash,
-            hash_transform=deterministic_json_hash
+            hash_func=lambda item: item["VolumeName"],
+            hash_transform=md5_hasher
         )
         # A reference to the base dataset is kept to access original metadata (e.g., VolumeName)
         # even if the transform fails early.

@@ -93,35 +93,28 @@ def get_transform_params(obj):
     return params
 
 
-def deterministic_json_hash(item: dict) -> bytes:
+def md5_hasher(text_to_hash: str) -> bytes:
     """
-    Creates a deterministic hash from an object.
-    - If the item is a data dictionary from the dataset, it hashes the 'VolumeName'.
-    - If the item is a transform configuration dictionary, it hashes the entire dictionary.
+    Creates a deterministic MD5 hash from a given string.
+    This function's only job is to hash a string. It is used as the `hash_func`.
     """
-    # Check if the item is a data dictionary by looking for a unique key.
-    if isinstance(item, dict) and "VolumeName" in item:
-        # For data items, base the hash on the stable, unique VolumeName only.
-        item_str = str(item["VolumeName"])
-    else:
-        # For transform configurations, serialize the entire dictionary.
-        item_str = json.dumps(item, sort_keys=True, default=json_serial_converter)
-
-    # The function must return bytes
-    return hashlib.md5(item_str.encode('utf-8')).hexdigest().encode('utf-8')
+    # The function must return bytes.
+    return hashlib.md5(text_to_hash.encode('utf-8')).hexdigest().encode('utf-8')
 
 
 
 def get_or_create_cache_subdirectory(base_cache_dir: Path, transforms: Compose, split: str) -> Path:
     """
     Determines the correct cache subdirectory based on transform parameters.
-    ...
     """
     # First, get the complete, serializable dictionary of transform parameters.
     transform_params = get_transform_params(transforms)
 
-    # Now, generate the hash FROM this dictionary. This ensures consistency.
-    config_hash = deterministic_json_hash(transform_params).decode('utf-8')
+    # Serialize the parameters into a stable JSON string.
+    transform_params_str = json.dumps(transform_params, sort_keys=True, default=json_serial_converter)
+
+    # Now, generate the hash FROM this string using the new hasher.
+    config_hash = md5_hasher(transform_params_str).decode('utf-8')
 
     # Construct the path for the specific cache subdirectory.
     cache_path = base_cache_dir / config_hash
