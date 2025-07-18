@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 from src.data.cache_utils import (
     get_or_create_cache_subdirectory,
-    md5_hasher,
+    deterministic_hash,
     worker_init_fn
 )
 
@@ -483,9 +483,9 @@ def train_model(
             transform=preprocess_transforms,
             cache_dir=train_cache_dir,
             # This tells MONAI to ONLY use the volume_name string for hashing.
-            hash_transform=lambda item: item["volume_name"],
+            hash_transform=deterministic_hash,
             # This calls our simple function to hash that string.
-            hash_func=md5_hasher
+            hash_func=deterministic_hash
         )
 
         # 3. In-memory cache for a percentage of the on-disk data.
@@ -519,8 +519,8 @@ def train_model(
             transform=preprocess_transforms,
             cache_dir=valid_cache_dir,
             # Apply the same robust logic here.
-            hash_transform=lambda item: item["volume_name"],
-            hash_func=md5_hasher
+            hash_transform=deterministic_hash,
+            hash_func=deterministic_hash
         )
         # 3. In-memory cache for the validation set.
         logger.info(f"Caching {config.cache.memory_rate * 100:.0f}% of validation data in RAM.")

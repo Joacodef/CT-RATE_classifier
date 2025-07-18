@@ -93,13 +93,26 @@ def get_transform_params(obj):
     return params
 
 
-def md5_hasher(text_to_hash: str) -> bytes:
+def deterministic_hash(item_to_hash: any) -> bytes:
     """
-    Creates a deterministic MD5 hash from a given string.
-    This function's only job is to hash a string. It is used as the `hash_func`.
+    Creates a deterministic MD5 hash for an object.
+
+    This function handles two cases to work correctly with MONAI's PersistentDataset:
+    1. If the input is a dictionary containing 'volume_name', it hashes ONLY the volume_name.
+       This makes the file hash stable and independent of other metadata.
+    2. Otherwise, it serializes the entire object (like a list of transforms) to JSON
+       and hashes that string. This is used for creating the cache directory hash.
     """
-    # The function must return bytes.
-    return hashlib.md5(text_to_hash.encode('utf-8')).hexdigest().encode('utf-8')
+    # Check if the item is a data dictionary. Use 'volume_name' (lowercase v).
+    if isinstance(item_to_hash, dict) and "volume_name" in item_to_hash:
+        # Case 1: Hashing a data item. Use only the volume name.
+        item_str = str(item_to_hash["volume_name"])
+    else:
+        # Case 2: Hashing a list of transforms or another object.
+        item_str = json.dumps(item_to_hash, sort_keys=True, default=json_serial_converter)
+
+    # Return the hash as bytes.
+    return hashlib.md5(item_str.encode('utf-8')).hexdigest().encode('utf-8')
 
 
 
@@ -114,7 +127,7 @@ def get_or_create_cache_subdirectory(base_cache_dir: Path, transforms: Compose, 
     transform_params_str = json.dumps(transform_params, sort_keys=True, default=json_serial_converter)
 
     # Now, generate the hash FROM this string using the new hasher.
-    config_hash = md5_hasher(transform_params_str).decode('utf-8')
+    config_hash = deterministic_hash(transform_params_str).decode('utf-8')
 
     # Construct the path for the specific cache subdirectory.
     cache_path = base_cache_dir / config_hash
