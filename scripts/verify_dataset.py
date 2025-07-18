@@ -33,7 +33,8 @@ try:
     from src.data.utils import get_dynamic_image_path
     from src.data.cache_utils import (
         get_or_create_cache_subdirectory,
-        deterministic_json_hash
+        deterministic_json_hash,
+        worker_init_fn  # Import the worker_init_fn
     )
 except ImportError as e:
     print(f"Error: Failed to import project modules. Run this script from the project root.\nDetails: {e}")
@@ -55,8 +56,65 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 disable_progress_bars()
 
-logger.info("Applying global patch to torch.load to allow MetaTensor deserialization.")
+# Apply a global patch to torch.load for the main process.
+# This is necessary to deserialize MONAI's MetaTensors.
+# The worker_init_fn will handle this for worker processes.
+# logger.info("Applying global patch to torch.load to allow MetaTensor deserialization.")
 torch.load = functools.partial(torch.load, weights_only=False)
+
+# --- Error-Handling Dataset Wrapper ---
+
+class VerifyingDataset(torch.utils.data.Dataset):
+    """
+    A wrapper for PersistentDataset that safely handles errors during item access.
+    This is used to pre-cache a dataset using multiple workers in a DataLoader,
+    allowing the main process to identify and log corrupt or problematic files
+    without crashing the entire process.
+    """
+    def __init__(self, base_dataset, transform, cache_dir):
+        """Initializes the VerifyingDataset."""
+        # The underlying dataset that loads and transforms data, caching the results.
+        self.persistent_ds = PersistentDataset(
+            data=base_dataset,
+            transform=transform,
+            cache_dir=cache_dir,
+            hash_func=deterministic_json_hash,
+            hash_transform=deterministic_json_hash
+        )
+        # A reference to the base dataset is kept to access original metadata (e.g., VolumeName)
+        # even if the transform fails early.
+        self.base_ds = base_dataset
+
+    def __len__(self) -> int:
+        """Returns the total number of items in the dataset."""
+        return len(self.persistent_ds)
+
+    def __getitem__(self, idx: int) -> dict:
+        """
+        Retrieves an item from the PersistentDataset. If an exception occurs
+        during loading or transformation, it catches the error and returns a
+        dictionary containing error information instead of crashing the worker.
+        """
+        try:
+            # Attempt to get the (potentially cached) transformed item.
+            return self.persistent_ds[idx]
+        except Exception as e:
+            # If an error occurs (e.g., corrupt file, transform issue),
+            # retrieve the original volume name from the base dataset.
+            volume_name = self.base_ds.get_volume_name(idx)
+            # Return a dictionary indicating failure. This will be handled by the main loop.
+            return {"VolumeName": volume_name, "error": e}
+
+# --- Collate Function for DataLoader ---
+
+def identity_collate(batch):
+    """
+    A simple collate function that just returns the item as-is.
+    This is necessary because when batch_size=None, the default `list_data_collate`
+    expects a list of items, but it receives a single dictionary, causing a KeyError.
+    It is defined at the top level to be pickleable for multiprocessing.
+    """
+    return batch
 
 # --- Core Script Functions ---
 
@@ -73,8 +131,6 @@ def find_missing_files(csv_path: Path, img_dir: Path, structure: str) -> list[st
     ]
     return missing_volumes
 
-# In scripts/verify_dataset.py
-
 def download_worker(volume_name: str, config: SimpleNamespace) -> str:
     """Worker function to download and then copy a single file from Hugging Face."""
     cfg_downloads = config.downloads
@@ -83,14 +139,12 @@ def download_worker(volume_name: str, config: SimpleNamespace) -> str:
         repo_subfolder = f"dataset/{parts[0]}_fixed/{parts[0]}_{parts[1]}/{parts[0]}_{parts[1]}_{parts[2]}" if len(parts) >= 3 else f"dataset/{parts[0]}"
         correct_filename = f"{volume_name.replace('.nii.gz', '')}.nii.gz"
         
-        logger.info(f"Downloading {correct_filename}...")
         temp_file_path = hf_hub_download(
             repo_id=cfg_downloads.repo_id, repo_type='dataset', token=cfg_downloads.hf_token,
             subfolder=repo_subfolder, filename=correct_filename, cache_dir=cfg_downloads.hf_cache_dir,
             resume_download=True
         )
 
-        # Use the single unified image directory for all files
         final_destination = get_dynamic_image_path(
             config.paths.img_dir, volume_name, config.paths.dir_structure
         )
@@ -103,14 +157,22 @@ def download_worker(volume_name: str, config: SimpleNamespace) -> str:
         return f"FAIL: {volume_name}"
 
 
-def precache_dataset(config: SimpleNamespace, num_shards: int, shard_id: int):
+def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards: int, shard_id: int, num_workers: int):
     """
-    Verifies all files in the unified dataset for corruption by leveraging
-    PersistentDataset's internal logic, which correctly identifies cached items.
-    """
-    logger.info(f"\n--- Starting Unified Dataset Verification and Caching (Shard {shard_id + 1}/{num_shards}) ---")
+    Verifies and pre-caches all files in a dataset shard using parallel workers.
 
-    # This transform is only used for getting the cache path hash.
+    This function leverages MONAI's PersistentDataset for caching but wraps it in
+    a DataLoader to process files in parallel. It is designed to be robust,
+    skipping already cached files, and logging any corrupt files it finds without
+    crashing.
+    """
+    logger.info(
+        f"\n--- Starting Unified Dataset Verification and Caching ---"
+        f"\nShard: {shard_id + 1}/{num_shards} | Parallel Workers: {num_workers}"
+    )
+
+    # This transform definition is used to generate a unique hash for the cache directory.
+    # It must contain all preprocessing steps that affect the final cached tensor.
     path_defining_transform = Compose([
         LoadImaged(keys="image", image_only=True, ensure_channel_first=True, reader="NibabelReader"),
         Orientationd(keys="image", axcodes=config.image_processing.orientation_axcodes),
@@ -123,31 +185,24 @@ def precache_dataset(config: SimpleNamespace, num_shards: int, shard_id: int):
         EnsureTyped(keys=["image", "label"], dtype=torch.float32)
     ])
 
-    df_path = Path(config.paths.data_dir) / config.paths.full_dataset_csv
-    if not df_path.exists():
-        logger.error(f"Full dataset CSV not found at {df_path}. Please check config.")
-        return
-
-    full_df = pd.read_csv(df_path)
-    
     # --- Sharding Logic ---
     total_files = len(full_df)
     if total_files == 0:
         logger.warning("Dataset is empty. Nothing to cache.")
         return
-        
+
     shard_size = (total_files + num_shards - 1) // num_shards
     start_index = shard_id * shard_size
     end_index = min(start_index + shard_size, total_files)
-    
+
     if start_index >= total_files:
         logger.info(f"No files for shard {shard_id + 1}. Skipping.")
         return
 
-    shard_df = full_df.iloc[start_index:end_index]
-    logger.info(f"[Shard {shard_id + 1}/{num_shards}] Processing {len(shard_df)} files from index {start_index} to {end_index}.")
+    shard_df = full_df.iloc[start_index:end_index].copy()
+    logger.info(f"[Shard {shard_id + 1}/{num_shards}] Processing {len(shard_df)} files from index {start_index} to {end_index-1}.")
 
-    # Create a dummy labels dataframe as it's required by the dataset class
+    # Create a dummy labels dataframe as it's required by the dataset class for initialization.
     dummy_labels_df = pd.DataFrame({
         'VolumeName': shard_df['VolumeName'],
         config.pathologies.columns[0]: 0
@@ -159,38 +214,53 @@ def precache_dataset(config: SimpleNamespace, num_shards: int, shard_id: int):
         pathology_columns=[config.pathologies.columns[0]],
         path_mode=config.paths.dir_structure
     )
-    
+
     cache_dir = get_or_create_cache_subdirectory(
         config.paths.cache_dir, path_defining_transform, split="unified"
     )
-    
-    verifying_ds = PersistentDataset(
-        data=base_ds, transform=path_defining_transform, cache_dir=cache_dir,
-        hash_func=deterministic_json_hash, hash_transform=deterministic_json_hash
+
+    # Use the error-handling wrapper dataset.
+    verifying_ds = VerifyingDataset(
+        base_dataset=base_ds,
+        transform=path_defining_transform,
+        cache_dir=cache_dir
+    )
+
+    # Use DataLoader to parallelize the caching process.
+    # batch_size=None disables automatic batching, so the loader yields one item at a time.
+    data_loader = DataLoader(
+        verifying_ds,
+        batch_size=None,
+        num_workers=num_workers,
+        worker_init_fn=worker_init_fn if num_workers > 0 else None,
+        collate_fn=identity_collate
     )
 
     corrupt_items = []
-    for i in tqdm(range(len(verifying_ds)), desc=f"Verifying Dataset (Shard {shard_id + 1}/{num_shards})"):
-        try:
-            _ = verifying_ds[i]
-        except Exception as e:
-            vol_name = base_ds[i].get("VolumeName", "Unknown")
+    # Iterate through the loader to trigger caching for each item.
+    progress_bar = tqdm(data_loader, desc=f"Verifying Dataset (Shard {shard_id + 1}/{num_shards})", total=len(verifying_ds))
+    for item in progress_bar:
+        if item and isinstance(item, dict) and 'error' in item:
+            # Log the error from the main process
             logger.error(
-                f"\n[Shard {shard_id + 1}/{num_shards}] Detected corrupt file while analyzing '{vol_name}'. Reason: {e}"
+                f"\n[Shard {shard_id + 1}/{num_shards}] Detected corrupt file while analyzing "
+                f"'{item['VolumeName']}'. Reason: {item['error']}"
             )
-            corrupt_items.append(vol_name)
+            corrupt_items.append(item['VolumeName'])
 
     logger.info(f"\n--- Verification and Caching Summary (Shard {shard_id + 1}/{num_shards}) ---")
     if not corrupt_items:
-        logger.info(f"All files in Shard {shard_id + 1} were verified successfully!")
+        logger.info(f"All {len(verifying_ds)} files in Shard {shard_id + 1} were verified/cached successfully!")
     else:
-        logger.warning(f"Found {len(corrupt_items)} corrupt files in Shard {shard_id + 1}:")
+        logger.warning(
+            f"{len(verifying_ds) - len(corrupt_items)} files were verified/cached successfully. "
+            f"Found {len(corrupt_items)} corrupt or unreadable files in Shard {shard_id + 1}:"
+        )
         for f in corrupt_items:
             logger.warning(f"  - {f}")
 
 
-
-def main(config_path: str, generate_cache: bool, num_shards: int, shard_id: int):
+def main(config_path: str, generate_cache: bool, num_shards: int, shard_id: int, num_workers: int):
     """Main orchestrator function."""
     if generate_cache and not (0 <= shard_id < num_shards):
         logger.error(f"Error: --shard-id ({shard_id}) must be between 0 and --num-shards-1 ({num_shards - 1}).")
@@ -199,10 +269,9 @@ def main(config_path: str, generate_cache: bool, num_shards: int, shard_id: int)
     logger.info("--- Starting Dataset Verification Script ---")
     config = load_config(config_path)
 
-    # Use the unified full_dataset_csv for all operations
+    # Determine the dataset list to use from config.
     full_dataset_path = Path(config.paths.data_dir) / config.paths.data_subsets.train
-
-    logger.info(f"Using dataset CSV at: {full_dataset_path}")
+    logger.info(f"Using dataset definition from: {full_dataset_path}")
 
     if not generate_cache:
         all_missing_files = find_missing_files(
@@ -222,14 +291,25 @@ def main(config_path: str, generate_cache: bool, num_shards: int, shard_id: int)
         return
 
     if generate_cache:
-        precache_dataset(config, num_shards, shard_id)
+        if not full_dataset_path.exists():
+            logger.error(f"Full dataset CSV not found at {full_dataset_path}. Please check config.")
+            return
+        full_df = pd.read_csv(full_dataset_path)
+        precache_dataset(config, full_df, num_shards, shard_id, num_workers)
+
 
 if __name__ == '__main__':
+    # This check is essential for multiprocessing on Windows.
+    # It prevents child processes from re-executing the main script's code.
+    if sys.platform == "win32":
+        torch.multiprocessing.freeze_support()
+
     parser = argparse.ArgumentParser(description="Verify, download, and cache the CT-RATE dataset.")
     parser.add_argument('--config', type=str, default='configs/config.yaml', help='Path to the YAML config file.')
     parser.add_argument('--generate-cache', action='store_true', help='Run the verification and caching process.')
+    parser.add_argument('--num-workers', type=int, default=4, help='Number of parallel workers for caching.')
     parser.add_argument('--num-shards', type=int, default=1, help='Total number of parallel shards to divide the dataset into.')
     parser.add_argument('--shard-id', type=int, default=0, help='The ID of this specific shard to process (0-indexed).')
     args = parser.parse_args()
     
-    main(args.config, args.generate_cache, args.num_shards, args.shard_id)
+    main(args.config, args.generate_cache, args.num_shards, args.shard_id, args.num_workers)
