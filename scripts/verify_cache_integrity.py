@@ -13,7 +13,6 @@ import torch
 from tqdm import tqdm
 
 # --- Project Setup ---
-# Add project root to Python path to allow importing from 'src'
 project_root = Path(__file__).resolve().parents[1]
 sys.path.append(str(project_root))
 
@@ -22,8 +21,6 @@ from src.data.cache_utils import get_or_create_cache_subdirectory
 from src.utils.logging_config import setup_logging
 
 # --- MONAI Imports ---
-# These must be identical to the ones used in verify_dataset.py to ensure
-# the transform hash is calculated correctly.
 from monai.transforms import (
     Compose,
     LoadImaged,
@@ -35,7 +32,6 @@ from monai.transforms import (
 )
 
 # --- Logging Configuration ---
-# Use the project's centralized logging setup for consistency.
 setup_logging(log_file=project_root / "logs" / "cache_verification.log")
 logger = logging.getLogger(__name__)
 
@@ -43,16 +39,6 @@ logger = logging.getLogger(__name__)
 def get_cache_defining_transform(config: SimpleNamespace) -> Compose:
     """
     Recreates the exact transform pipeline used for caching in verify_dataset.py.
-
-    The returned transform object is used to compute a hash, which determines
-    the specific cache subdirectory name. It must be identical to the
-    transform used to create the cache.
-
-    Args:
-        config (SimpleNamespace): The loaded project configuration.
-
-    Returns:
-        Compose: The MONAI transform pipeline for preprocessing.
     """
     return Compose(
         [
@@ -81,8 +67,6 @@ def get_cache_defining_transform(config: SimpleNamespace) -> Compose:
                 spatial_size=config.image_processing.target_shape_dhw,
                 mode="area",
             ),
-            # Note: EnsureTyped for 'label' is included for hash consistency,
-            # even though we only check the 'image' part.
             EnsureTyped(keys=["image", "label"], dtype=torch.float32),
         ]
     )
@@ -91,20 +75,15 @@ def get_cache_defining_transform(config: SimpleNamespace) -> Compose:
 def verify_file_integrity(file_path: Path) -> Tuple[Path, bool]:
     """
     Checks if a single .pt file can be loaded by torch.
-
-    Args:
-        file_path (Path): The path to the .pt file to verify.
-
-    Returns:
-        A tuple containing the file path and a boolean indicating if it's
-        valid (True) or corrupt (False).
     """
     try:
-        # Use map_location='cpu' to avoid moving data to GPU just for a check.
-        torch.load(file_path, map_location="cpu")
+        # --- THIS IS THE FIX ---
+        # Explicitly set weights_only=False to allow loading MONAI MetaTensors
+        # on newer versions of PyTorch (>=2.6).
+        torch.load(file_path, map_location="cpu", weights_only=False)
         return file_path, True
-    except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
-        # Catches common errors for corrupted torch/zip files.
+    except (RuntimeError, EOFError, zipfile.BadZipFile, pickle.UnpicklingError) as e:
+        # Catches common errors for corrupted torch/zip files and unpickling issues.
         logger.debug(f"Corruption detected in {file_path}: {e}")
         return file_path, False
 
@@ -124,11 +103,7 @@ def verify_cache_integrity(config_path: str, fix: bool, workers: int):
             )
             return
 
-        # 1. Recreate the exact transform to find the correct cache directory.
         path_defining_transform = get_cache_defining_transform(config)
-
-        # 2. Get the specific cache subdirectory using the "unified" split name,
-        # matching the logic in `verify_dataset.py`.
         unified_cache_dir = get_or_create_cache_subdirectory(
             base_cache_dir, path_defining_transform, split="unified"
         )
@@ -138,7 +113,6 @@ def verify_cache_integrity(config_path: str, fix: bool, workers: int):
             logger.info("Cache directory does not exist. No files to verify.")
             return
 
-        # 3. Scan for all .pt files to be checked.
         files_to_check = list(unified_cache_dir.glob("*.pt"))
         if not files_to_check:
             logger.info("No .pt files found in cache directory. Exiting.")
@@ -149,7 +123,6 @@ def verify_cache_integrity(config_path: str, fix: bool, workers: int):
         )
 
         corrupted_files: List[Path] = []
-        # 4. Use a process pool for efficient, parallel verification.
         with ProcessPoolExecutor(max_workers=workers) as executor:
             future_to_file = {
                 executor.submit(verify_file_integrity, file): file
@@ -161,13 +134,19 @@ def verify_cache_integrity(config_path: str, fix: bool, workers: int):
                 desc="Verifying Cache",
             )
             for future in progress:
-                file_path, is_valid = future.result()
-                if not is_valid:
+                # We need to handle exceptions that might be raised from the future
+                try:
+                    file_path, is_valid = future.result()
+                    if not is_valid:
+                        corrupted_files.append(file_path)
+                except Exception as e:
+                    file_path = future_to_file[future]
+                    logger.error(f"Unexpected error processing {file_path}: {e}")
                     corrupted_files.append(file_path)
+
 
         logger.info("Verification complete.")
 
-        # --- Report and Fix ---
         if not corrupted_files:
             logger.info(
                 f"Success! All {len(files_to_check)} checked files are valid."
@@ -175,7 +154,7 @@ def verify_cache_integrity(config_path: str, fix: bool, workers: int):
             return
 
         logger.warning(
-            f"Found {len(corrupted_files)} corrupted file(s) out of {len(files_to_check)} total."
+            f"Found {len(corrupted_files)} corrupted or unreadable file(s) out of {len(files_to_check)} total."
         )
         for f in corrupted_files:
             logger.warning(f"  - Corrupted: {f}")
@@ -200,7 +179,6 @@ def verify_cache_integrity(config_path: str, fix: bool, workers: int):
             f"An unexpected error occurred during cache verification: {e}",
             exc_info=True,
         )
-
 
 def main():
     """Main function to parse arguments and run the verification."""
@@ -232,7 +210,8 @@ def main():
 
 
 if __name__ == "__main__":
-    # This check is important for multiprocessing compatibility, especially on Windows.
     if sys.platform == "win32":
         torch.multiprocessing.freeze_support()
+    # Import pickle here for the except block
+    import pickle
     main()
