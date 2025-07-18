@@ -24,9 +24,9 @@ from src.training.trainer import (
     create_model,
     load_and_prepare_data,
     train_model,
-    deterministic_json_hash,
-    worker_init_fn
+    worker_init_fn 
 )
+from src.data.cache_utils import deterministic_hash
 from src.models.resnet3d import resnet18_3d
 from src.models.densenet3d import densenet121_3d
 from src.models.vit3d import vit_small_3d
@@ -265,7 +265,6 @@ class TestTrainModel:
         mock_load_data.assert_called_once_with(mock_config)
         mock_create_model.assert_called_once_with(mock_config)
         
-        # Check that CTMetadataDataset was called correctly with the unified img_dir
         mock_ctmetadata_dataset.assert_has_calls([
             call(dataframe=ANY, img_dir=mock_config.paths.img_dir, pathology_columns=ANY, path_mode=ANY),
             call(dataframe=ANY, img_dir=mock_config.paths.img_dir, pathology_columns=ANY, path_mode=ANY)
@@ -276,9 +275,9 @@ class TestTrainModel:
         if use_cache:
             mock_persistent_dataset.assert_has_calls([
                 call(data=mock_base_train_ds, transform=ANY, cache_dir=mock_train_cache_path, 
-                     hash_func=deterministic_json_hash, hash_transform=deterministic_json_hash),
+                     hash_func=deterministic_hash, hash_transform=deterministic_hash),
                 call(data=mock_base_valid_ds, transform=ANY, cache_dir=mock_valid_cache_path, 
-                     hash_func=deterministic_json_hash, hash_transform=deterministic_json_hash)
+                     hash_func=deterministic_hash, hash_transform=deterministic_hash)
             ])
             # For the augmented dataloader call
             mock_dataloader.assert_has_calls([

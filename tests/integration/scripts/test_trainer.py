@@ -123,28 +123,29 @@ def test_train_script_resume_no_checkpoint(mock_log_warning, mock_train_model, t
 @patch("scripts.train.train_model")
 def test_train_script_resume_with_checkpoint(mock_train_model, test_environment, monkeypatch):
     """
-    Tests the --resume flag when a checkpoint file exists.
+    Tests the --resume flag when a checkpoint file exists in the base output directory.
     Verifies the config is updated with the correct checkpoint path.
     """
     config_path = test_environment["config_path"]
-    base_output_dir = test_environment["output_dir"]
+    output_dir = test_environment["output_dir"]
 
-    # The train script modifies the output path to be fold-specific.
-    # Since the --fold argument is not passed, it defaults to 0.
-    # We must create the checkpoint where the script expects to find it.
-    fold_output_dir = base_output_dir / "fold_0"
-    fold_output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = fold_output_dir / "last_checkpoint.pth"
+    # Create the checkpoint directly in the base output directory, which is
+    # the correct location when the --fold argument is not used.
+    checkpoint_path = output_dir / "last_checkpoint.pth"
     checkpoint_path.touch()
 
-    # Simulate running the script with the resume flag
-    monkeypatch.setattr(sys, "argv", ["scripts/train.py", "--config", str(config_path), "--resume"])
+    # Simulate running the script with the resume flag but without specifying a fold.
+    monkeypatch.setattr(sys, "argv", [
+        "scripts/train.py",
+        "--config", str(config_path),
+        "--resume"
+    ])
 
     train_main()
 
-    # Verify the training function was called with the updated config
+    # Verify the training function was called with the updated config.
     mock_train_model.assert_called_once()
     passed_config = mock_train_model.call_args.args[0]
     
-    # Assert that the resume path in the config points to the created checkpoint
+    # Assert that the resume path in the config points to the created checkpoint.
     assert passed_config.training.resume_from_checkpoint == str(checkpoint_path)
