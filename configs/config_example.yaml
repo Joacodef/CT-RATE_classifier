@@ -47,6 +47,8 @@ paths:
   # Define the name for the output file
   output_filename: "filtered_master_list.csv"
 
+torch_dtype: "float32"
+
 # --- Model Configuration ---
 model:
   type: "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d"
