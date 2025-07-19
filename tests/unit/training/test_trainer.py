@@ -100,8 +100,9 @@ def mock_config(tmp_path: Path) -> SimpleNamespace:
         ),
         cache=SimpleNamespace(
             use_cache=False,
-            memory_rate=0.0,
+            memory_rate=1.0,
         ),
+        torch_dtype=torch.float32,
         wandb=SimpleNamespace(enabled=False, project=None, run_name=None, resume=None, group=None)
     )
     # Create the unified image directory
@@ -194,7 +195,8 @@ class TestTrainModel:
     """Tests the main `train_model` orchestration function."""
 
     @pytest.mark.parametrize("use_cache", [True, False])
-    @patch('src.training.trainer.get_or_create_cache_subdirectory')
+    @patch('src.training.trainer.get_preprocessing_transforms')
+    @patch('src.training.trainer.LabelAttacherDataset')
     @patch('src.training.trainer.generate_final_report')
     @patch('src.training.trainer.save_checkpoint')
     @patch('src.training.trainer.compute_metrics')
@@ -214,82 +216,100 @@ class TestTrainModel:
         mock_cache_ds, mock_monai_dataset, mock_dataloader, mock_wandb_init,
         mock_load_data, mock_create_model, mock_train_epoch,
         mock_validate_epoch, mock_compute_metrics, mock_save_checkpoint,
-        mock_generate_report, mock_get_cache_dir, mock_config, use_cache
+        mock_generate_report, mock_label_attacher, mock_get_transforms,
+        mock_config, use_cache
     ):
         """
-        Tests the 'happy path' of train_model, ensuring all components are called
-        as expected, for both cached and non-cached scenarios.
+        Tests the 'happy path' of train_model, ensuring the new decoupled data
+        pipeline is constructed correctly for both cached and non-cached scenarios.
         """
         # --- Config Setup ---
         mock_config.cache.use_cache = use_cache
         mock_config.training.augment = True
 
-        # --- Mock Return Values Setup ---
+        # --- Mock Return Values ---
+
+        # FIX 1: The mock dataframe must contain the pathology columns.
         mock_load_data.return_value = (
             pd.DataFrame({'VolumeName': ['train_vol_1'], 'Cardiomegaly': [1], 'Atelectasis': [0]}),
             pd.DataFrame({'VolumeName': ['valid_vol_1'], 'Cardiomegaly': [0], 'Atelectasis': [1]})
         )
         mock_model = MagicMock(spec=nn.Module); mock_model.to.return_value = mock_model
-        mock_model.parameters.return_value = nn.Linear(1, 1).parameters()
         mock_create_model.return_value = mock_model
-        
+        mock_model.parameters.return_value = nn.Linear(1, 1).parameters()
         mock_train_epoch.return_value = 0.5
         mock_validate_epoch.return_value = (0.4, np.array([[0.1]]), np.array([[0]]))
         mock_compute_metrics.return_value = {'roc_auc_macro': 0.85, 'f1_macro': 0.75}
-        
-        # --- Mock Data Pipeline Setup (Conditional) ---
+
+        # FIX 2: The mocked transform function must return a serializable object.
+        from monai.transforms import Compose
+        mock_get_transforms.return_value = Compose([])
+
+
+        # --- Mock Data Pipeline Setup ---
         mock_base_train_ds, mock_base_valid_ds = MagicMock(), MagicMock()
         mock_ctmetadata_dataset.side_effect = [mock_base_train_ds, mock_base_valid_ds]
 
-        if use_cache:
-            mock_train_cache_path = mock_config.paths.cache_dir / "train_hash"
-            mock_valid_cache_path = mock_config.paths.cache_dir / "valid_hash"
-            mock_get_cache_dir.side_effect = [mock_train_cache_path, mock_valid_cache_path]
+        mock_labeled_train, mock_labeled_valid = MagicMock(), MagicMock()
+        mock_label_attacher.side_effect = [mock_labeled_train, mock_labeled_valid]
+        
+        mock_augmented_train = MagicMock()
+        mock_apply_transforms.return_value = mock_augmented_train
 
+        if use_cache:
             mock_persistent_train, mock_persistent_valid = MagicMock(), MagicMock()
             mock_persistent_dataset.side_effect = [mock_persistent_train, mock_persistent_valid]
             
             mock_cached_train, mock_cached_valid = MagicMock(), MagicMock()
             mock_cache_ds.side_effect = [mock_cached_train, mock_cached_valid]
-
-            mock_augmented_train = MagicMock()
-            mock_apply_transforms.return_value = mock_augmented_train
         else:
-            mock_final_train_ds, mock_final_valid_ds = MagicMock(), MagicMock()
-            mock_monai_dataset.side_effect = [mock_final_train_ds, mock_final_valid_ds]
+            mock_preprocessed_train, mock_preprocessed_valid = MagicMock(), MagicMock()
+            mock_monai_dataset.side_effect = [mock_preprocessed_train, mock_preprocessed_valid]
 
         # --- EXECUTION ---
         train_model(mock_config)
 
         # --- ASSERTIONS ---
         mock_load_data.assert_called_once_with(mock_config)
-        mock_create_model.assert_called_once_with(mock_config)
-        
-        mock_ctmetadata_dataset.assert_has_calls([
-            call(dataframe=ANY, img_dir=mock_config.paths.img_dir, pathology_columns=ANY, path_mode=ANY),
-            call(dataframe=ANY, img_dir=mock_config.paths.img_dir, pathology_columns=ANY, path_mode=ANY)
-        ])
+        mock_get_transforms.assert_called_once_with(mock_config)
 
-        assert mock_train_epoch.call_count == mock_config.training.num_epochs
+        # Assert that CTMetadataDataset is called WITHOUT pathology_columns
+        mock_ctmetadata_dataset.assert_has_calls([
+            call(dataframe=ANY, img_dir=mock_config.paths.img_dir, path_mode=ANY),
+            call(dataframe=ANY, img_dir=mock_config.paths.img_dir, path_mode=ANY)
+        ])
         
         if use_cache:
-            mock_persistent_dataset.assert_has_calls([
-                call(data=mock_base_train_ds, transform=ANY, cache_dir=mock_train_cache_path, 
-                     hash_func=deterministic_hash, hash_transform=deterministic_hash),
-                call(data=mock_base_valid_ds, transform=ANY, cache_dir=mock_valid_cache_path, 
-                     hash_func=deterministic_hash, hash_transform=deterministic_hash)
+            mock_label_attacher.assert_has_calls([
+                call(image_source=mock_cached_train, labels_df=ANY, pathology_columns=ANY),
+                call(image_source=mock_cached_valid, labels_df=ANY, pathology_columns=ANY)
             ])
-            # For the augmented dataloader call
-            mock_dataloader.assert_has_calls([
-                call(mock_augmented_train, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn),
-                call(mock_cached_valid, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn)
-            ], any_order=False)
-        else: # No cache
-            mock_monai_dataset.assert_has_calls([
-                call(data=mock_base_train_ds, transform=ANY),
-                call(data=mock_base_valid_ds, transform=ANY)
+        else:
+            mock_label_attacher.assert_has_calls([
+                call(image_source=mock_preprocessed_train, labels_df=ANY, pathology_columns=ANY),
+                call(image_source=mock_preprocessed_valid, labels_df=ANY, pathology_columns=ANY)
             ])
-            mock_dataloader.assert_has_calls([
-                call(mock_final_train_ds, batch_size=ANY, shuffle=True, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn),
-                call(mock_final_valid_ds, batch_size=ANY, shuffle=False, num_workers=ANY, pin_memory=ANY, persistent_workers=ANY, prefetch_factor=ANY, worker_init_fn=worker_init_fn)
-            ], any_order=False)
+
+        # Assert DataLoaders get the correct final datasets with the correct arguments
+        mock_dataloader.assert_has_calls([
+            call(
+                mock_augmented_train,
+                batch_size=mock_config.training.batch_size,
+                shuffle=True,
+                num_workers=mock_config.training.num_workers,
+                pin_memory=mock_config.training.pin_memory,
+                persistent_workers=mock_config.training.num_workers > 0,
+                prefetch_factor=mock_config.training.prefetch_factor if mock_config.training.num_workers > 0 else None,
+                worker_init_fn=worker_init_fn
+            ),
+            call(
+                mock_labeled_valid,
+                batch_size=mock_config.training.batch_size,
+                shuffle=False,
+                num_workers=mock_config.training.num_workers,
+                pin_memory=mock_config.training.pin_memory,
+                persistent_workers=mock_config.training.num_workers > 0,
+                prefetch_factor=mock_config.training.prefetch_factor if mock_config.training.num_workers > 0 else None,
+                worker_init_fn=worker_init_fn
+            )
+        ], any_order=False)

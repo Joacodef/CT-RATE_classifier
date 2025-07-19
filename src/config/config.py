@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from dotenv import load_dotenv
 import numpy as np
+import torch
 
 def _substitute_env_vars(data):
     """
@@ -80,6 +81,13 @@ def load_config(config_path: str | Path) -> SimpleNamespace:
 
     # 3. Convert dictionary to a nested SimpleNamespace
     cfg = _dict_to_namespace(subst_config)
+
+    if hasattr(cfg, 'torch_dtype') and isinstance(cfg.torch_dtype, str):
+        dtype_str = cfg.torch_dtype
+        if hasattr(torch, dtype_str):
+            cfg.torch_dtype = getattr(torch, dtype_str)
+        else:
+            raise ValueError(f"Unknown torch_dtype '{dtype_str}' in config.")
 
     # 4. Resolve and process paths
     cfg.paths.base_project_dir = Path(cfg.paths.base_project_dir).resolve()

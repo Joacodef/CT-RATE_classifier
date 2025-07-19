@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from monai.transforms import Compose
 
+from src.data.transforms import KeyCleanerD
+
 # Get logger
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,11 @@ def json_serial_converter(o):
     Custom JSON converter for types that are not serializable by default.
     Handles Path objects, numpy arrays, torch Tensors/dtypes, and other special types.
     """
-    # Add this check for type objects
+    
+    if isinstance(o, KeyCleanerD):
+        # Serialize the class name and its important parameters
+        return {"class": o.__class__.__name__, "keys_to_keep": sorted(list(o.keys_to_keep))}
+    
     if isinstance(o, type):
         return o.__name__
         
@@ -107,6 +113,8 @@ def deterministic_hash(item_to_hash: any) -> bytes:
     if isinstance(item_to_hash, dict) and "volume_name" in item_to_hash:
         # Case 1: Hashing a data item. Use only the volume name.
         item_str = str(item_to_hash["volume_name"])
+
+        print(f"--- DEBUG: Hashing file based on string: '{item_str}'")
     else:
         # Case 2: Hashing a list of transforms or another object.
         item_str = json.dumps(item_to_hash, sort_keys=True, default=json_serial_converter)

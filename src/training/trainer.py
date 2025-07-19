@@ -21,15 +21,9 @@ import wandb
 import functools
 
 # MONAI imports
-from monai.data import PersistentDataset, DataLoader, Dataset, CacheDataset 
+from monai.data import PersistentDataset, DataLoader, Dataset, CacheDataset
 from monai.transforms import (
     Compose,
-    LoadImaged,
-    EnsureChannelFirstd,
-    Orientationd,
-    Spacingd,
-    ScaleIntensityRanged,
-    Resized,
     RandFlipd,
     RandGaussianNoised,
     RandShiftIntensityd,
@@ -45,7 +39,8 @@ from src.models.densenet3d import densenet121_3d, densenet169_3d, densenet201_3d
 from src.models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d
 
 # Internal imports - data
-from src.data.dataset import CTMetadataDataset, ApplyTransforms
+from src.data.dataset import CTMetadataDataset, ApplyTransforms, LabelAttacherDataset
+from src.data.transforms import get_preprocessing_transforms
 
 # Internal imports - training utilities
 from src.training.metrics import compute_metrics
@@ -414,129 +409,74 @@ def train_model(
     # Load and prepare data.
     train_df, valid_df = load_and_prepare_data(config)
 
-    # Define MONAI Transform Pipelines
-    # These keys must match the dictionary keys returned by CTMetadataDataset
-    keys = ["image", "label"]
-
-    preprocess_transforms = Compose([
-        LoadImaged(keys="image", image_only=True, ensure_channel_first=True,
-                   reader="NibabelReader"),
-        Orientationd(keys="image", axcodes=config.image_processing.orientation_axcodes),
-        Spacingd(keys="image", pixdim=config.image_processing.target_spacing, mode="bilinear"),
-        ScaleIntensityRanged(keys="image",
-                               a_min=config.image_processing.clip_hu_min,
-                               a_max=config.image_processing.clip_hu_max,
-                               b_min=0.0, b_max=1.0, clip=True),
-        Resized(keys="image", spatial_size=config.image_processing.target_shape_dhw, mode="area"),
-        EnsureTyped(keys=keys, dtype=torch.float32)
-    ])
-
-    # Create the base metadata datasets
-    base_train_ds = CTMetadataDataset(
-        dataframe=train_df,
-        img_dir=config.paths.img_dir,
-        pathology_columns=config.pathologies.columns,
-        path_mode=config.paths.dir_structure
-    )
-    # Both datasets point to the same unified image directory.
-    base_valid_ds = CTMetadataDataset(
-        dataframe=valid_df,
-        img_dir=config.paths.img_dir,
-        pathology_columns=config.pathologies.columns,
-        path_mode=config.paths.dir_structure
-    )
-
+    # Define the preprocessing and augmentation transform pipelines.
+    preprocess_transforms = get_preprocessing_transforms(config)
+    
+    # Augmentation transforms are defined separately as they are applied after caching.
     augment_transforms = Compose([
-        # Spatial augmentations (Potentially GPU-based)
         RandAffined(
             keys="image",
             prob=0.1, 
-            rotate_range=(np.pi / 12, np.pi / 12, np.pi / 12), # Rotate by +/- 15 degrees
-            scale_range=((0.85, 1.15), (0.85, 1.15), (0.85, 1.15)), # Zoom in/out by 15%
-            translate_range=((-20, 20), (-20, 20), (0, 0)), # Translate on H and W axes
+            rotate_range=(np.pi / 12, np.pi / 12, np.pi / 12),
+            scale_range=((0.85, 1.15), (0.85, 1.15), (0.85, 1.15)),
+            translate_range=((-20, 20), (-20, 20), (0, 0)),
             mode="bilinear",
             padding_mode="zeros",
             device="cpu" 
         ),
-        # CPU-based intensity augmentations
         RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.01),
         RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5),
-        EnsureTyped(keys=keys, dtype=torch.float32)
+        # Final type check after all transforms. Note: only applies to keys that exist.
+        EnsureTyped(keys=["image", "label"], dtype=config.torch_dtype)
     ])
 
-    # Compose the final datasets with caching and augmentations
     if config.cache.use_cache:
-        logger.info(f"Hybrid caching enabled. Disk cache is persistent.")
-
-        # --- Training Dataset Chain ---
+        logger.info("Persistent caching is enabled.")
         
-        # 1. Determine the configuration-specific cache directory for training data.
-        train_cache_dir = get_or_create_cache_subdirectory(
-            base_cache_dir=config.paths.cache_dir,
-            transforms=preprocess_transforms,
-            split="train"
-        )
+        # --- Training Data Pipeline ---
+        # 1. Label-agnostic dataset to find image paths.
+        base_train_ds = CTMetadataDataset(dataframe=train_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
         
-        # 2. On-disk cache for the entire dataset using the specific directory.
-        train_persistent_ds = PersistentDataset(
-            data=base_train_ds,
-            transform=preprocess_transforms,
-            cache_dir=train_cache_dir,
-            # This tells MONAI to ONLY use the volume_name string for hashing.
-            hash_transform=deterministic_hash,
-            # This calls our simple function to hash that string.
-            hash_func=deterministic_hash
-        )
-
-        # 3. In-memory cache for a percentage of the on-disk data.
-        logger.info(f"Caching {config.cache.memory_rate * 100:.0f}% of training data in RAM.")
-        train_in_memory_ds = CacheDataset(
-            data=train_persistent_ds,
-            cache_rate=config.cache.memory_rate,
-            num_workers=config.training.num_workers
-        )
-
-        # 4. Apply on-the-fly augmentations to the cached data.
-        if config.training.augment:
-            train_dataset = ApplyTransforms(train_in_memory_ds, augment_transforms)
-            logger.info("Applying on-the-fly augmentations to hybrid-cached training data.")
-        else:
-            train_dataset = train_in_memory_ds
-            logger.info("Hybrid-cached training data ready.")
-
-        # --- Validation Dataset Chain ---
+        # 2. Define cache directory based on the preprocessing transforms.
+        train_cache_dir = get_or_create_cache_subdirectory(config.paths.cache_dir, preprocess_transforms, split="train")
         
-        # 1. Determine the configuration-specific cache directory for validation data.
-        valid_cache_dir = get_or_create_cache_subdirectory(
-            base_cache_dir=config.paths.cache_dir,
-            transforms=preprocess_transforms,
-            split="valid"
-        )
+        # 3. Persistent disk cache for preprocessed images (no labels).
+        train_image_source = PersistentDataset(data=base_train_ds, transform=preprocess_transforms, cache_dir=train_cache_dir, hash_func=deterministic_hash)
+        
+        # 4. In-memory cache for faster access.
+        if config.cache.memory_rate > 0:
+            logger.info(f"Using {config.cache.memory_rate * 100:.0f}% in-memory cache for training.")
+            train_image_source = CacheDataset(data=train_image_source, cache_rate=config.cache.memory_rate, num_workers=config.training.num_workers)
 
-        # 2. On-disk cache for the validation set.
-        valid_persistent_ds = PersistentDataset(
-            data=base_valid_ds,
-            transform=preprocess_transforms,
-            cache_dir=valid_cache_dir,
-            # Apply the same robust logic here.
-            hash_transform=deterministic_hash,
-            hash_func=deterministic_hash
-        )
-        # 3. In-memory cache for the validation set.
-        logger.info(f"Caching {config.cache.memory_rate * 100:.0f}% of validation data in RAM.")
-        valid_dataset = CacheDataset(
-            data=valid_persistent_ds,
-            cache_rate=config.cache.memory_rate,
-            num_workers=config.training.num_workers
-        )
-        logger.info("Hybrid-cached validation data ready.")
+        # 5. Attach labels to the cached images on-the-fly.
+        train_labeled_ds = LabelAttacherDataset(image_source=train_image_source, labels_df=train_df, pathology_columns=config.pathologies.columns)
+        
+        # 6. Apply augmentations if enabled.
+        train_dataset = ApplyTransforms(train_labeled_ds, augment_transforms) if config.training.augment else train_labeled_ds
+
+        # --- Validation Data Pipeline (same logic, no augmentation) ---
+        base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
+        valid_cache_dir = get_or_create_cache_subdirectory(config.paths.cache_dir, preprocess_transforms, split="valid")
+        valid_image_source = PersistentDataset(data=base_valid_ds, transform=preprocess_transforms, cache_dir=valid_cache_dir, hash_func=deterministic_hash)
+        if config.cache.memory_rate > 0:
+            logger.info(f"Using {config.cache.memory_rate * 100:.0f}% in-memory cache for validation.")
+            valid_image_source = CacheDataset(data=valid_image_source, cache_rate=config.cache.memory_rate, num_workers=config.training.num_workers)
+        valid_dataset = LabelAttacherDataset(image_source=valid_image_source, labels_df=valid_df, pathology_columns=config.pathologies.columns)
 
     else:
-        # No caching, apply all transforms on-the-fly
-        logger.info("Caching is disabled. Applying all transforms on-the-fly.")
-        final_train_transforms = Compose([preprocess_transforms, augment_transforms]) if config.training.augment else preprocess_transforms
-        train_dataset = Dataset(data=base_train_ds, transform=final_train_transforms)
-        valid_dataset = Dataset(data=base_valid_ds, transform=preprocess_transforms)
+        logger.info("Caching is disabled. All transforms will be applied on-the-fly.")
+        
+        # --- Training Data Pipeline (No Caching) ---
+        base_train_ds = CTMetadataDataset(dataframe=train_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
+        train_preprocessed_ds = Dataset(data=base_train_ds, transform=preprocess_transforms)
+        train_labeled_ds = LabelAttacherDataset(image_source=train_preprocessed_ds, labels_df=train_df, pathology_columns=config.pathologies.columns)
+        train_dataset = ApplyTransforms(train_labeled_ds, augment_transforms) if config.training.augment else train_labeled_ds
+
+        # --- Validation Data Pipeline (No Caching) ---
+        base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
+        valid_preprocessed_ds = Dataset(data=base_valid_ds, transform=preprocess_transforms)
+        valid_dataset = LabelAttacherDataset(image_source=valid_preprocessed_ds, labels_df=valid_df, pathology_columns=config.pathologies.columns)
+    
 
 
     train_loader = DataLoader(

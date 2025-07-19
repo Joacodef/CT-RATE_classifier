@@ -19,38 +19,24 @@ logger = logging.getLogger(__name__)
 
 class CTMetadataDataset(Dataset):
     """
-    A PyTorch Dataset that provides metadata for CT scans.
+    A PyTorch Dataset that provides the file path for a given CT scan.
 
-    This dataset's primary role is to return the file path of a CT volume and its
-    corresponding multi-label pathology vector for a given index. It does not load
-    or perform any transformations on the image data itself. This separation of
-    concerns makes it compatible with MONAI's data handling components like
-    PersistentDataset, which manage data loading and caching.
-
-    Attributes:
-        dataframe (pd.DataFrame): The DataFrame containing volume names and labels.
-        img_dir (Path): The base directory where the CT scan volumes are stored.
-        pathology_columns (List[str]): A list of column names in the DataFrame
-            that represent the pathology labels.
-        path_mode (str): The directory structure mode ('flat' or 'nested') used
-            to locate the image files.
+    This dataset's sole responsibility is to resolve and return the file path
+    for a given index based on a dataframe of volume names. It is completely
+    agnostic to labels and image content, making it a clean source for a
+    caching pipeline that should not be concerned with metadata.
     """
-    def __init__(self, dataframe: pd.DataFrame, img_dir: Path,
-                 pathology_columns: List[str], path_mode: str = "nested"):
+    def __init__(self, dataframe: pd.DataFrame, img_dir: Path, path_mode: str = "nested"):
         """
         Initializes the CTMetadataDataset.
 
         Args:
-            dataframe (pd.DataFrame): DataFrame with volume names and pathology labels.
+            dataframe (pd.DataFrame): DataFrame containing at least a 'VolumeName' column.
             img_dir (Path): The root directory for the image volumes.
-            pathology_columns (List[str]): The names of the label columns.
-            path_mode (str): The directory structure type. Can be 'flat' or 'nested'.
-                'flat': All images are directly inside img_dir.
-                'nested': Images are in subdirectories based on their name.
+            path_mode (str): The directory structure type ('flat' or 'nested').
         """
         self.dataframe = dataframe
         self.img_dir = Path(img_dir)
-        self.pathology_columns = pathology_columns
         self.path_mode = path_mode
 
     def __len__(self) -> int:
@@ -61,24 +47,18 @@ class CTMetadataDataset(Dataset):
         """
         Retrieves the metadata for a single sample.
 
-        This method fetches the volume name and labels for the given index,
-        constructs the full path to the NIfTI file, and returns them in a
-        dictionary. This dictionary is the standard format expected by MONAI's
-        downstream transform and loading components.
-
         Args:
             idx (int): The index of the sample to retrieve.
 
         Returns:
             A dictionary containing:
             - 'image' (Path): The absolute path to the CT volume file.
-            - 'label' (torch.Tensor): A float tensor of the pathology labels.
             - 'volume_name' (str): The name of the volume file.
         """
         row = self.dataframe.iloc[idx]
         volume_name = row['VolumeName']
 
-        # Construct the full path to the image using the original volume name
+        # Construct the full path to the image.
         nii_path = get_dynamic_image_path(self.img_dir, volume_name, self.path_mode)
 
         if not nii_path.exists():
@@ -87,14 +67,11 @@ class CTMetadataDataset(Dataset):
                 "The 'image' key will point to a non-existent path."
             )
 
-        labels = torch.tensor(row[self.pathology_columns].values.astype(float), dtype=torch.float32)
-
         return {
             "image": nii_path,
-            "label": labels,
             "volume_name": volume_name
         }
-
+    
 
 class ApplyTransforms(Dataset):
     """
@@ -136,3 +113,58 @@ class ApplyTransforms(Dataset):
         """
         item = self.data[idx]
         return self.transform(item)
+    
+
+class LabelAttacherDataset(Dataset):
+    """
+    A wrapper dataset that attaches labels to data from a source dataset.
+
+    This class is designed to work with a caching pipeline. It takes an
+    'image_source' dataset (e.g., a MONAI CacheDataset) that yields processed,
+    label-free image data, and a pandas DataFrame that holds the labels.
+    It merges them together on-the-fly.
+    """
+    def __init__(self, image_source: Dataset, labels_df: pd.DataFrame, pathology_columns: List[str]):
+        """
+        Initializes the LabelAttacherDataset.
+
+        Args:
+            image_source (Dataset): The base dataset that provides the processed
+                image data (e.g., a tensor and its metadata).
+            labels_df (pd.DataFrame): The DataFrame containing the labels.
+            pathology_columns (List[str]): The names of the label columns in the DataFrame.
+        """
+        self.image_source = image_source
+        self.labels_df = labels_df
+        self.pathology_columns = pathology_columns
+
+    def __len__(self) -> int:
+        """Returns the length of the source dataset."""
+        return len(self.image_source)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Retrieves an item, attaches its label, and returns the combined dictionary.
+
+        Args:
+            idx (int): The index of the sample to retrieve.
+
+        Returns:
+            A dictionary containing the image data from the source, plus the
+            'label' and 'volume_name' from the labels DataFrame.
+        """
+        # Get the processed image and metadata from the caching pipeline.
+        data_dict = self.image_source[idx]
+
+        # Get the corresponding label information from the DataFrame.
+        label_row = self.labels_df.iloc[idx]
+        labels = torch.tensor(label_row[self.pathology_columns].values.astype(float), dtype=torch.float32)
+
+        # Add the label to the dictionary.
+        data_dict['label'] = labels
+        
+        # The volume_name should already be in data_dict, but we can ensure it is.
+        # This also serves as a sanity check.
+        data_dict['volume_name'] = label_row['VolumeName']
+
+        return data_dict

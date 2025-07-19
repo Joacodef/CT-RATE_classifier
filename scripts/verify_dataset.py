@@ -18,27 +18,22 @@ from tqdm import tqdm
 
 # --- MONAI Imports ---
 from monai.data import PersistentDataset, DataLoader
-from monai.transforms import (
-    Compose, LoadImaged, Orientationd, Spacingd,
-    ScaleIntensityRanged, Resized, EnsureTyped
-)
 
 # --- Project Setup ---
 project_root = Path(__file__).resolve().parents[1]
 sys.path.append(str(project_root))
 
-try:
-    from src.config import load_config
-    from src.data.dataset import CTMetadataDataset
-    from src.data.utils import get_dynamic_image_path
-    from src.data.cache_utils import (
-        get_or_create_cache_subdirectory,
-        deterministic_hash,
-        worker_init_fn  # Import the worker_init_fn
-    )
-except ImportError as e:
-    print(f"Error: Failed to import project modules. Run this script from the project root.\nDetails: {e}")
-    sys.exit(1)
+
+from src.config import load_config
+from src.data.dataset import CTMetadataDataset
+from src.data.utils import get_dynamic_image_path
+from src.data.cache_utils import (
+    get_or_create_cache_subdirectory,
+    deterministic_hash,
+    worker_init_fn  # Import the worker_init_fn
+)
+from src.data.transforms import get_preprocessing_transforms
+
 
 # --- Logging Configuration ---
 log_directory = project_root / "logs"
@@ -78,8 +73,7 @@ class VerifyingDataset(torch.utils.data.Dataset):
             data=base_dataset,
             transform=transform,    
             cache_dir=cache_dir,
-            hash_func=deterministic_hash,  
-            hash_transform=deterministic_hash
+            hash_func=deterministic_hash
         )
         # A reference to the base dataset is kept to access original metadata (e.g., VolumeName)
         # even if the transform fails early.
@@ -101,7 +95,7 @@ class VerifyingDataset(torch.utils.data.Dataset):
         except Exception as e:
             # If an error occurs (e.g., corrupt file, transform issue),
             # retrieve the original volume name from the base dataset.
-            volume_name = self.base_ds.get_volume_name(idx)
+            volume_name = self.base_ds[idx]['volume_name']
             # Return a dictionary indicating failure. This will be handled by the main loop.
             return {"VolumeName": volume_name, "error": e}
 
@@ -162,14 +156,13 @@ def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards:
     """
     Verifies and pre-caches existing files in a dataset shard using parallel workers.
 
-    This function first filters the input dataframe to include only the files that
-    physically exist on disk. It then leverages MONAI's PersistentDataset for caching,
-    wrapped in a DataLoader to process files in parallel. It is designed to be robust,
-    skipping missing files and logging any corrupt files it finds without crashing.
+    This function filters the dataframe to include only existing files, then uses a
+    shared, centralized preprocessing pipeline to create a self-contained,
+    label-free cache of the processed image data.
     """
     logger.info(
-        f"\n--- Starting Unified Dataset Verification and Caching ---"
-        f"\nShard: {shard_id + 1}/{num_shards} | Parallel Workers: {num_workers}"
+        f"\n--- Starting Unified Dataset Verification and Caching ---\n"
+        f"Shard: {shard_id + 1}/{num_shards} | Parallel Workers: {num_workers}"
     )
 
     # --- Filter dataframe for files that actually exist on disk ---
@@ -180,28 +173,16 @@ def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards:
     ]
 
     if not existing_rows:
-        logger.warning("No existing files from the provided list were found in the image directory. Nothing to cache.")
+        logger.warning("No existing files from the provided list were found. Nothing to cache.")
         return
 
     existing_files_df = pd.DataFrame(existing_rows)
     logger.info(f"Found {len(existing_files_df)} existing files out of {len(full_df)} total entries listed.")
 
+    # Get the centralized, reusable preprocessing pipeline.
+    preprocess_transforms = get_preprocessing_transforms(config)
 
-    # This transform definition is used to generate a unique hash for the cache directory.
-    # It must contain all preprocessing steps that affect the final cached tensor.
-    path_defining_transform = Compose([
-        LoadImaged(keys="image", image_only=True, ensure_channel_first=True, reader="NibabelReader"),
-        Orientationd(keys="image", axcodes=config.image_processing.orientation_axcodes),
-        Spacingd(keys="image", pixdim=config.image_processing.target_spacing, mode="bilinear"),
-        ScaleIntensityRanged(
-            keys="image", a_min=config.image_processing.clip_hu_min,
-            a_max=config.image_processing.clip_hu_max, b_min=0.0, b_max=1.0, clip=True
-        ),
-        Resized(keys="image", spatial_size=config.image_processing.target_shape_dhw, mode="area"),
-        EnsureTyped(keys=["image", "label"], dtype=torch.float32)
-    ])
-
-    # --- Sharding Logic (applied to the list of existing files) ---
+    # --- Sharding Logic ---
     total_files = len(existing_files_df)
     shard_size = (total_files + num_shards - 1) // num_shards
     start_index = shard_id * shard_size
@@ -214,32 +195,25 @@ def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards:
     shard_df = existing_files_df.iloc[start_index:end_index].copy()
     logger.info(f"[Shard {shard_id + 1}/{num_shards}] Processing {len(shard_df)} files from index {start_index} to {end_index-1}.")
 
-    # Create a dummy labels dataframe as it's required by the dataset class for initialization.
-    dummy_labels_df = pd.DataFrame({
-        'VolumeName': shard_df['VolumeName'],
-        config.pathologies.columns[0]: 0
-    })
-
+    # Use the label-agnostic dataset. No dummy labels are needed.
     base_ds = CTMetadataDataset(
-        dataframe=dummy_labels_df,
+        dataframe=shard_df,
         img_dir=config.paths.img_dir,
-        pathology_columns=[config.pathologies.columns[0]],
         path_mode=config.paths.dir_structure
     )
 
     cache_dir = get_or_create_cache_subdirectory(
-        config.paths.cache_dir, path_defining_transform, split="unified"
+        config.paths.cache_dir, preprocess_transforms, split="unified"
     )
 
     # Use the error-handling wrapper dataset.
     verifying_ds = VerifyingDataset(
         base_dataset=base_ds,
-        transform=path_defining_transform,
+        transform=preprocess_transforms,
         cache_dir=cache_dir
     )
 
     # Use DataLoader to parallelize the caching process.
-    # batch_size=None disables automatic batching, so the loader yields one item at a time.
     data_loader = DataLoader(
         verifying_ds,
         batch_size=None,
@@ -253,7 +227,6 @@ def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards:
     progress_bar = tqdm(data_loader, desc=f"Verifying Dataset (Shard {shard_id + 1}/{num_shards})", total=len(verifying_ds))
     for item in progress_bar:
         if item and isinstance(item, dict) and 'error' in item:
-            # Log the error from the main process
             logger.error(
                 f"\n[Shard {shard_id + 1}/{num_shards}] Detected corrupt file while analyzing "
                 f"'{item['VolumeName']}'. Reason: {item['error']}"
@@ -270,6 +243,7 @@ def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards:
         )
         for f in corrupt_items:
             logger.warning(f"  - {f}")
+
 
 def main(config_path: str, generate_cache: bool, num_shards: int, shard_id: int, num_workers: int):
     """Main orchestrator function."""
