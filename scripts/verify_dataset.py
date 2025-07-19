@@ -33,7 +33,7 @@ try:
     from src.data.utils import get_dynamic_image_path
     from src.data.cache_utils import (
         get_or_create_cache_subdirectory,
-        md5_hasher,
+        deterministic_hash,
         worker_init_fn  # Import the worker_init_fn
     )
 except ImportError as e:
@@ -76,10 +76,10 @@ class VerifyingDataset(torch.utils.data.Dataset):
         # The underlying dataset that loads and transforms data, caching the results.
         self.persistent_ds = PersistentDataset(
             data=base_dataset,
-            transform=transform,
+            transform=transform,    
             cache_dir=cache_dir,
-            hash_func=lambda item: item["VolumeName"],
-            hash_transform=md5_hasher
+            hash_func=deterministic_hash,  
+            hash_transform=deterministic_hash
         )
         # A reference to the base dataset is kept to access original metadata (e.g., VolumeName)
         # even if the transform fails early.
@@ -157,19 +157,35 @@ def download_worker(volume_name: str, config: SimpleNamespace) -> str:
         return f"FAIL: {volume_name}"
 
 
+
 def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards: int, shard_id: int, num_workers: int):
     """
-    Verifies and pre-caches all files in a dataset shard using parallel workers.
+    Verifies and pre-caches existing files in a dataset shard using parallel workers.
 
-    This function leverages MONAI's PersistentDataset for caching but wraps it in
-    a DataLoader to process files in parallel. It is designed to be robust,
-    skipping already cached files, and logging any corrupt files it finds without
-    crashing.
+    This function first filters the input dataframe to include only the files that
+    physically exist on disk. It then leverages MONAI's PersistentDataset for caching,
+    wrapped in a DataLoader to process files in parallel. It is designed to be robust,
+    skipping missing files and logging any corrupt files it finds without crashing.
     """
     logger.info(
         f"\n--- Starting Unified Dataset Verification and Caching ---"
         f"\nShard: {shard_id + 1}/{num_shards} | Parallel Workers: {num_workers}"
     )
+
+    # --- Filter dataframe for files that actually exist on disk ---
+    logger.info("Scanning for existing files specified in the input dataframe...")
+    existing_rows = [
+        row for _, row in tqdm(full_df.iterrows(), total=len(full_df), desc="Checking file existence")
+        if get_dynamic_image_path(config.paths.img_dir, str(row['VolumeName']), config.paths.dir_structure).exists()
+    ]
+
+    if not existing_rows:
+        logger.warning("No existing files from the provided list were found in the image directory. Nothing to cache.")
+        return
+
+    existing_files_df = pd.DataFrame(existing_rows)
+    logger.info(f"Found {len(existing_files_df)} existing files out of {len(full_df)} total entries listed.")
+
 
     # This transform definition is used to generate a unique hash for the cache directory.
     # It must contain all preprocessing steps that affect the final cached tensor.
@@ -185,12 +201,8 @@ def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards:
         EnsureTyped(keys=["image", "label"], dtype=torch.float32)
     ])
 
-    # --- Sharding Logic ---
-    total_files = len(full_df)
-    if total_files == 0:
-        logger.warning("Dataset is empty. Nothing to cache.")
-        return
-
+    # --- Sharding Logic (applied to the list of existing files) ---
+    total_files = len(existing_files_df)
     shard_size = (total_files + num_shards - 1) // num_shards
     start_index = shard_id * shard_size
     end_index = min(start_index + shard_size, total_files)
@@ -199,7 +211,7 @@ def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards:
         logger.info(f"No files for shard {shard_id + 1}. Skipping.")
         return
 
-    shard_df = full_df.iloc[start_index:end_index].copy()
+    shard_df = existing_files_df.iloc[start_index:end_index].copy()
     logger.info(f"[Shard {shard_id + 1}/{num_shards}] Processing {len(shard_df)} files from index {start_index} to {end_index-1}.")
 
     # Create a dummy labels dataframe as it's required by the dataset class for initialization.
@@ -258,7 +270,6 @@ def precache_dataset(config: SimpleNamespace, full_df: pd.DataFrame, num_shards:
         )
         for f in corrupt_items:
             logger.warning(f"  - {f}")
-
 
 def main(config_path: str, generate_cache: bool, num_shards: int, shard_id: int, num_workers: int):
     """Main orchestrator function."""
