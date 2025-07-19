@@ -114,7 +114,6 @@ def deterministic_hash(item_to_hash: any) -> bytes:
         # Case 1: Hashing a data item. Use only the volume name.
         item_str = str(item_to_hash["volume_name"])
 
-        print(f"--- DEBUG: Hashing file based on string: '{item_str}'")
     else:
         # Case 2: Hashing a list of transforms or another object.
         item_str = json.dumps(item_to_hash, sort_keys=True, default=json_serial_converter)
