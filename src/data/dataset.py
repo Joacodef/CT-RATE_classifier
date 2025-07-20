@@ -61,11 +61,11 @@ class CTMetadataDataset(Dataset):
         # Construct the full path to the image.
         nii_path = get_dynamic_image_path(self.img_dir, volume_name, self.path_mode)
 
-        if not nii_path.exists():
-            logger.warning(
-                f"Volume not found: {nii_path} for index {idx}. "
-                "The 'image' key will point to a non-existent path."
-            )
+        # if not nii_path.exists():
+        #     logger.warning(
+        #         f"Volume not found: {nii_path} for index {idx}. "
+        #         "The 'image' key will point to a non-existent path."
+        #     )
 
         return {
             "image": nii_path,
