@@ -32,7 +32,30 @@ The recommended workflow for using this repository is as follows:
 
 ## Repository Structure
 
-.├── .github/workflows           # GitHub Actions for CI/CD├── configs/                    # Configuration files├── data/                       # (Git-ignored) Raw and processed data├── notebooks/                  # (Git-ignored) Jupyter notebooks for exploration├── output/                     # (Git-ignored) Saved models, logs, and reports├── requirements.txt            # Project dependencies├── scripts/                    # High-level scripts for core tasks│   ├── create_filtered_dataset.py # Filters the main dataset CSV│   ├── create_kfold_splits.py  # Creates k-fold data splits│   ├── train.py                # Main training script│   ├── inference.py            # Runs inference on new data│   └── optimize_hyperparams.py # Performs hyperparameter search├── src/                        # Source code for the project│   ├── config/                 # Configuration loading and parsing│   ├── data/                   # Dataset, dataloader, and preprocessing logic│   ├── evaluation/             # Evaluation metrics and reporting│   ├── models/                 # Model architectures (ResNet, DenseNet, ViT)│   ├── training/               # Core training and validation loops│   └── utils/                  # Utility functions└── tests/                      # Unit and integration tests
+```
+.
+├── .github/workflows           # GitHub Actions for CI/CD
+├── configs/                    # Configuration files
+├── data/                       # (Git-ignored) Raw and processed data
+├── notebooks/                  # (Git-ignored) Jupyter notebooks for exploration
+├── output/                     # (Git-ignored) Saved models, logs, and reports
+├── requirements.txt            # Project dependencies
+├── scripts/                    # High-level scripts for core tasks
+│   ├── create_filtered_dataset.py # Filters the main dataset CSV
+│   ├── create_kfold_splits.py  # Creates k-fold data splits
+│   ├── train.py                # Main training script
+│   ├── inference.py            # Runs inference on new data
+│   └── optimize_hyperparams.py # Performs hyperparameter search
+├── src/                        # Source code for the project
+│   ├── config/                 # Configuration loading and parsing
+│   ├── data/                   # Dataset, dataloader, and preprocessing logic
+│   ├── evaluation/             # Evaluation metrics and reporting
+│   ├── models/                 # Model architectures (ResNet, DenseNet, ViT)
+│   ├── training/               # Core training and validation loops
+│   └── utils/                  # Utility functions
+└── tests/                      # Unit and integration tests
+```
+
 ---
 
 ## 1. Setup and Configuration
@@ -119,17 +142,55 @@ python scripts/create_filtered_dataset.py \
     --input-file /path/to/your/dataset.csv \
     --img-dir /path/to/raw/images \
     --output-file ./data/filtered_dataset.csv
-Create K-Fold SplitsFor robust evaluation, this script creates data splits using Stratified Grouped K-Fold. This method is ideal for medical datasets because it:Stratifies by the combination of pathology labels to ensure each fold has a similar distribution of cases.Groups by patient_id to ensure that all scans from a single patient remain in the same fold (either training or validation), preventing data leakage.python scripts/create_kfold_splits.py \
+```
+
+### Create K-Fold Splits
+
+For robust evaluation, this script creates data splits using **Stratified Grouped K-Fold**. This method is ideal for medical datasets because it:
+
+1.  **Stratifies** by the combination of pathology labels to ensure each fold has a similar distribution of cases.
+2.  **Groups** by `patient_id` to ensure that all scans from a single patient remain in the same fold (either training or validation), preventing data leakage.
+
+```bash
+python scripts/create_kfold_splits.py \
     --config configs/my_experiment.yaml \
     --input-file ./data/filtered_dataset.csv \
     --output-dir ./data/splits \
     --n-splits 5
-This will create files like fold_0_train.csv, fold_0_val.csv, etc., which are used automatically by the training script.4. TrainingTraining a Single ModelTo train a single model, use the train.py script and specify the fold number. The script will automatically locate the correct split files and use the master labels file for training.python scripts/train.py \
+```
+
+This will create files like `fold_0_train.csv`, `fold_0_val.csv`, etc., which are used automatically by the training script.
+
+---
+
+## 4. Training
+
+### Training a Single Model
+
+To train a single model, use the `train.py` script and specify the fold number. The script will automatically locate the correct split files and use the master labels file for training.
+
+```bash
+python scripts/train.py \
     --config configs/my_experiment.yaml \
     --fold 0
-Overriding Parameters: You can override specific parameters from the config file via the command line:python scripts/train.py --config configs/my_experiment.yaml --fold 0 --model-type vit3d --learning-rate 1e-4
-Resuming Training: To resume a run from the latest checkpoint in the output directory:python scripts/train.py --config configs/my_experiment.yaml --fold 0 --resume
-Running Full K-Fold Cross-ValidationTo run a full cross-validation experiment, you can loop through the folds using a simple bash script.for i in {0..4}; do
+```
+
+* **Overriding Parameters**: You can override specific parameters from the config file via the command line:
+    ```bash
+    python scripts/train.py --config configs/my_experiment.yaml --fold 0 --model-type vit3d --learning-rate 1e-4
+    ```
+
+* **Resuming Training**: To resume a run from the latest checkpoint in the output directory:
+    ```bash
+    python scripts/train.py --config configs/my_experiment.yaml --fold 0 --resume
+    ```
+
+### Running Full K-Fold Cross-Validation
+
+To run a full cross-validation experiment, you can loop through the folds using a simple bash script.
+
+```bash
+for i in {0..4}; do
     echo "--------------------------------"
     echo "--- Starting Training, Fold $i ---"
     echo "--------------------------------"
@@ -137,23 +198,76 @@ Running Full K-Fold Cross-ValidationTo run a full cross-validation experiment, y
         --config configs/my_experiment.yaml \
         --fold $i
 done
-5. InferenceUse a trained model to make predictions on new data. The inference script requires the configuration file and the model checkpoint (.pth file) from a training output directory.Single Volume InferenceThis prints predictions to the console and saves a detailed JSON file.python scripts/inference.py \
+```
+
+---
+
+## 5. Inference
+
+Use a trained model to make predictions on new data. The inference script requires the configuration file and the model checkpoint (`.pth` file) from a training output directory.
+
+### Single Volume Inference
+
+This prints predictions to the console and saves a detailed JSON file.
+
+```bash
+python scripts/inference.py \
     --config /path/to/output/from_training/config.yaml \
     --model /path/to/output/from_training/best_model.pth \
     --input /path/to/single/volume.nii.gz \
     --output /path/to/results/single_result
-Batch InferenceThis processes all volumes in a directory and generates a single CSV file with predictions for each one.python scripts/inference.py \
+```
+
+### Batch Inference
+
+This processes all volumes in a directory and generates a single CSV file with predictions for each one.
+
+```bash
+python scripts/inference.py \
     --config /path/to/output/from_training/config.yaml \
     --model /path/to/output/from_training/best_model.pth \
     --input /path/to/directory_of_volumes/ \
     --output /path/to/results/batch_results.csv
-6. Hyperparameter Optimization (Optional)The repository includes an efficient hyperparameter optimization workflow using Optuna that leverages staged optimization to save time and computational resources.1. Create Data Subsets for Staged OptimizationFirst, create smaller, stratified subsets of your training data. The optimization script will use these to quickly evaluate a large number of hyperparameter combinations on a small amount of data before promoting the best-performing trials to larger data subsets.python scripts/create_training_subsets.py \
+```
+
+---
+
+## 6. Hyperparameter Optimization (Optional)
+
+The repository includes an efficient hyperparameter optimization workflow using Optuna that leverages **staged optimization** to save time and computational resources.
+
+### 1. Create Data Subsets for Staged Optimization
+
+First, create smaller, stratified subsets of your training data. The optimization script will use these to quickly evaluate a large number of hyperparameter combinations on a small amount of data before promoting the best-performing trials to larger data subsets.
+
+```bash
+python scripts/create_training_subsets.py \
     --config configs/my_experiment.yaml \
     --input-file /path/to/your/full_train_split.csv \
     --fractions 0.5 0.2 0.05
-2. Run the Staged Optimization StudyThis will launch an Optuna study. The study is persistent and resumable, as its results are saved to a .db file.Early, unpromising trials are run on small data fractions (e.g., 5%).More promising trials are "promoted" to run on larger fractions (e.g., 20%, 50%, and finally 100%).This prunes bad hyperparameter sets quickly, focusing resources on the ones that matter.python scripts/optimize_hyperparams.py \
+```
+
+### 2. Run the Staged Optimization Study
+
+This will launch an Optuna study. The study is persistent and resumable, as its results are saved to a `.db` file.
+
+* Early, unpromising trials are run on small data fractions (e.g., 5%).
+* More promising trials are "promoted" to run on larger fractions (e.g., 20%, 50%, and finally 100%).
+* This prunes bad hyperparameter sets quickly, focusing resources on the ones that matter.
+
+```bash
+python scripts/optimize_hyperparams.py \
     --config configs/my_experiment.yaml \
     --n-trials 100 \
     --study-name "vit3d-optimization-study" \
     --storage-db "vit3d_study.db"
-7. TestingTo run the full suite of unit and integration tests, use pytest:pytest
+```
+
+---
+
+## 7. Testing
+
+To run the full suite of unit and integration tests, use `pytest`:
+
+```bash
+pytest
