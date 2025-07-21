@@ -1,4 +1,3 @@
-````markdown
 # Scripts Module (`/scripts`)
 
 This directory contains the high-level, executable scripts that drive the entire machine learning pipeline. These scripts are the primary user-facing tools for data preparation, model training, hyperparameter optimization, and inference.
@@ -163,7 +162,4 @@ python scripts/verify_cache_integrity.py --config configs/config.yaml
 
 # Find and delete corrupted files
 python scripts/verify_cache_integrity.py --config configs/config.yaml --fix
-```
-
-```
 ```
