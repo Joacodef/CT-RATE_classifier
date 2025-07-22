@@ -1,0 +1,160 @@
+# scripts/verify_and_download.py
+
+import argparse
+import logging
+import shutil
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from pathlib import Path
+from types import SimpleNamespace
+
+import pandas as pd
+from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import disable_progress_bars
+from tqdm import tqdm
+
+# --- Project Setup ---
+# Ensures that the script can find modules in the 'src' directory.
+project_root = Path(__file__).resolve().parents[1]
+sys.path.append(str(project_root))
+
+from src.config import load_config
+from src.data.utils import get_dynamic_image_path
+
+# --- Logging Configuration ---
+# Sets up logging to both a file and the console for clear progress tracking.
+log_directory = project_root / "logs"
+log_directory.mkdir(exist_ok=True)
+log_file_path = log_directory / "verify_and_download.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file_path, mode='a'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+# Suppresses the default progress bars from huggingface_hub for a cleaner output.
+disable_progress_bars()
+
+
+# --- Core Script Functions ---
+
+def find_missing_files(csv_path: Path, img_dir: Path, structure: str) -> list[str]:
+    """
+    Scans a dataset definition CSV and returns a list of volume names
+    for files that are not found on the local disk.
+
+    Args:
+        csv_path: The path to the CSV file listing the dataset volumes.
+        img_dir: The base directory where image files are stored.
+        structure: The directory structure format (e.g., 'flat', 'nested').
+
+    Returns:
+        A list of strings, where each string is the name of a missing volume.
+    """
+    if not csv_path.is_file():
+        logger.error(f"Dataset CSV file not found: {csv_path}")
+        return []
+    df = pd.read_csv(csv_path)
+    missing_volumes = [
+        str(row['VolumeName'])
+        for _, row in df.iterrows()
+        if not get_dynamic_image_path(img_dir, str(row['VolumeName']), structure).exists()
+    ]
+    return missing_volumes
+
+
+def download_worker(volume_name: str, config: SimpleNamespace) -> str:
+    """
+    Worker function to download a single volume from a Hugging Face repository
+    and place it in the correct local directory.
+
+    Args:
+        volume_name: The name of the volume to download (e.g., 'train_123_a_1.nii.gz').
+        config: A namespace object containing download and path configurations.
+
+    Returns:
+        A status string indicating success ('OK') or failure ('FAIL').
+    """
+    cfg_downloads = config.downloads
+    try:
+        # Construct the repository subfolder path based on the volume name convention.
+        parts = volume_name.split('_')
+        repo_subfolder = f"dataset/{parts[0]}_fixed/{parts[0]}_{parts[1]}/{parts[0]}_{parts[1]}_{parts[2]}" if len(parts) >= 3 else f"dataset/{parts[0]}"
+        correct_filename = f"{volume_name.replace('.nii.gz', '')}.nii.gz"
+        
+        # Download the file to a temporary Hugging Face cache.
+        temp_file_path = hf_hub_download(
+            repo_id=cfg_downloads.repo_id,
+            repo_type='dataset',
+            token=cfg_downloads.hf_token,
+            subfolder=repo_subfolder,
+            filename=correct_filename,
+            cache_dir=cfg_downloads.hf_cache_dir,
+            resume_download=True
+        )
+
+        # Determine the final destination for the downloaded file.
+        final_destination = get_dynamic_image_path(
+            config.paths.img_dir, volume_name, config.paths.dir_structure
+        )
+        
+        # Create the destination directory and copy the file.
+        final_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(temp_file_path, final_destination)
+        return f"OK: {volume_name}"
+    except Exception as e:
+        logger.error(f"Failed during processing of {volume_name}: {e}", exc_info=False)
+        return f"FAIL: {volume_name}"
+
+
+def main(config_path: str):
+    """
+    Main orchestrator function that finds and downloads missing dataset files.
+    """
+    logger.info("--- Starting Dataset Verification and Download Script ---")
+    config = load_config(config_path)
+
+    # Use the primary training dataset list to check for completeness.
+    full_dataset_path = Path(config.paths.data_dir) / config.paths.data_subsets.train
+    logger.info(f"Using dataset definition from: {full_dataset_path}")
+
+    # Find all files listed in the CSV that are not present locally.
+    all_missing_files = find_missing_files(
+        full_dataset_path, config.paths.img_dir, config.paths.dir_structure
+    )
+
+    if all_missing_files:
+        logger.info(f"\nFound {len(all_missing_files)} total missing files.")
+        try:
+            # Prompt the user to confirm the download.
+            if input("Do you want to download them? (Y/N): ").strip().lower() == 'y':
+                task = partial(download_worker, config=config)
+                # Use a thread pool to download multiple files in parallel.
+                with ThreadPoolExecutor(max_workers=config.downloads.max_workers) as executor:
+                    list(tqdm(executor.map(task, all_missing_files), total=len(all_missing_files), desc="Downloading"))
+            else:
+                logger.info("Download declined by user.")
+        except (EOFError, KeyboardInterrupt):
+            logger.info("\nDownload cancelled by user.")
+    else:
+        logger.info("All dataset files specified in the CSV are already present.")
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description="Verify that all dataset files exist and download any missing ones."
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='configs/config.yaml',
+        help='Path to the YAML config file.'
+    )
+    args = parser.parse_args()
+    
+    main(args.config)

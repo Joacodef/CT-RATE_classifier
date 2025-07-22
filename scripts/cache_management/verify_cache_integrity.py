@@ -77,7 +77,6 @@ def verify_file_integrity(file_path: Path) -> Tuple[Path, bool]:
     Checks if a single .pt file can be loaded by torch.
     """
     try:
-        # --- THIS IS THE FIX ---
         # Explicitly set weights_only=False to allow loading MONAI MetaTensors
         # on newer versions of PyTorch (>=2.6).
         torch.load(file_path, map_location="cpu", weights_only=False)
