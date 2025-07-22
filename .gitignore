@@ -25,3 +25,5 @@ configs/*
 MagicMock/
 
 hf_cache
+
+hash_to_volume_map.json
