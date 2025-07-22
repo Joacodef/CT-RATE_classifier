@@ -4,6 +4,7 @@ import argparse
 import functools
 import logging
 import os
+import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -83,76 +84,96 @@ def analyze_cache_state(volumes_df: pd.DataFrame, cache_dir: Path) -> pd.DataFra
             missing_volumes.append(row.to_dict())
     return pd.DataFrame(missing_volumes) if missing_volumes else pd.DataFrame()
 
-def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_workers: int, use_hf_cache: bool):
+def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_workers: int):
     num_batches = (len(files_df) + batch_size - 1) // batch_size
     logger.info(f"Processing {len(files_df)} files in {num_batches} batches of size {batch_size}.")
 
     preprocess_transforms = get_preprocessing_transforms(config)
     cache_dir = get_or_create_cache_subdirectory(
-        config.paths.cache_dir, preprocess_transforms, split="unified"
+        Path(config.paths.cache_dir), preprocess_transforms, split="unified"
     )
+    
+    # Create a single parent directory for all temporary batch caches
+    main_temp_hf_dir = Path(config.paths.data_dir) / "temp_hf_batch_cache"
+    main_temp_hf_dir.mkdir(exist_ok=True)
 
-    for i in range(num_batches):
-        batch_num = i + 1
-        logger.info(f"\n--- Starting Batch {batch_num}/{num_batches} ---")
-        
-        start_idx = i * batch_size
-        end_idx = start_idx + batch_size
-        batch_df = files_df.iloc[start_idx:end_idx]
+    try:
+        for i in range(num_batches):
+            batch_num = i + 1
+            logger.info(f"\n--- Starting Batch {batch_num}/{num_batches} ---")
+            
+            start_idx = i * batch_size
+            end_idx = start_idx + batch_size
+            batch_df = files_df.iloc[start_idx:end_idx]
 
-        volumes_to_download = [
-            row['VolumeName'] for _, row in batch_df.iterrows()
-            if not get_dynamic_image_path(config.paths.img_dir, row['VolumeName'], config.paths.dir_structure).exists()
-        ]
-        
-        downloaded_volume_names = set()
-        if volumes_to_download:
-            logger.info(f"[Batch {batch_num}] Downloading {len(volumes_to_download)} files...")
-            with ThreadPoolExecutor(max_workers=config.downloads.max_workers) as executor:
-                task = functools.partial(download_worker, config=config, use_hf_cache=use_hf_cache)
-                results = list(tqdm(executor.map(task, volumes_to_download), total=len(volumes_to_download), desc=f"Downloading Batch {batch_num}"))
-            for vol_name, res in zip(volumes_to_download, results):
-                if res.startswith("OK"):
-                    downloaded_volume_names.add(vol_name)
-        else:
-            logger.info(f"[Batch {batch_num}] All raw files for this batch are already present locally. No downloads needed.")
+            # Create a dedicated temporary cache for this specific batch
+            batch_hf_cache_dir = main_temp_hf_dir / f"batch_{batch_num}"
+            batch_hf_cache_dir.mkdir(exist_ok=True)
 
-        logger.info(f"[Batch {batch_num}] Caching {len(batch_df)} files...")
-        base_ds = CTMetadataDataset(
-            dataframe=batch_df, img_dir=config.paths.img_dir,
-            path_mode=config.paths.dir_structure
-        )
-        caching_ds = CachingDataset(
-            base_dataset=base_ds, transform=preprocess_transforms,
-            cache_dir=cache_dir
-        )
-        data_loader = DataLoader(
-            caching_ds, batch_size=None, num_workers=num_workers,
-            worker_init_fn=worker_init_fn, collate_fn=identity_collate
-        )
+            volumes_to_download = [
+                row['VolumeName'] for _, row in batch_df.iterrows()
+                if not get_dynamic_image_path(Path(config.paths.img_dir), row['VolumeName'], config.paths.dir_structure).exists()
+            ]
+            
+            downloaded_volume_names = set()
+            if volumes_to_download:
+                logger.info(f"[Batch {batch_num}] Downloading {len(volumes_to_download)} files...")
+                with ThreadPoolExecutor(max_workers=config.downloads.max_workers) as executor:
+                    task = functools.partial(download_worker, config=config, hf_cache_dir=batch_hf_cache_dir)
+                    results = list(tqdm(executor.map(task, volumes_to_download), total=len(volumes_to_download), desc=f"Downloading Batch {batch_num}"))
+                for vol_name, res in zip(volumes_to_download, results):
+                    if "OK" in res:
+                        downloaded_volume_names.add(vol_name)
+            else:
+                logger.info(f"[Batch {batch_num}] All raw files for this batch are already present locally. No downloads needed.")
 
-        successfully_cached_volumes = set()
-        progress_bar = tqdm(enumerate(data_loader), desc=f"Caching Batch {batch_num}", total=len(caching_ds))
-        for j, item in progress_bar:
-            if item and isinstance(item, dict) and 'error' not in item:
-                original_volume_name = base_ds[j]['volume_name']
-                successfully_cached_volumes.add(original_volume_name)
+            logger.info(f"[Batch {batch_num}] Caching {len(batch_df)} files...")
+            base_ds = CTMetadataDataset(
+                dataframe=batch_df, img_dir=Path(config.paths.img_dir),
+                path_mode=config.paths.dir_structure
+            )
+            caching_ds = CachingDataset(
+                base_dataset=base_ds, transform=preprocess_transforms,
+                cache_dir=cache_dir
+            )
+            data_loader = DataLoader(
+                caching_ds, batch_size=None, num_workers=num_workers,
+                worker_init_fn=worker_init_fn, collate_fn=identity_collate
+            )
 
-        files_to_clean = downloaded_volume_names.intersection(successfully_cached_volumes)
-        if files_to_clean:
-            logger.info(f"[Batch {batch_num}] Cleaning up {len(files_to_clean)} downloaded raw NIfTI files...")
-            cleaned_count = 0
-            for volume_name in files_to_clean:
-                try:
-                    file_path_to_delete = get_dynamic_image_path(config.paths.img_dir, volume_name, config.paths.dir_structure)
-                    if file_path_to_delete.exists():
-                        os.remove(file_path_to_delete)
-                        cleaned_count += 1
-                except OSError as e:
-                    logger.error(f"Failed to delete {volume_name}: {e}")
-            logger.info(f"[Batch {batch_num}] Cleanup complete. Deleted {cleaned_count} files.")
-        else:
-            logger.info(f"[Batch {batch_num}] No downloaded files to clean up for this batch.")
+            successfully_cached_volumes = set()
+            progress_bar = tqdm(enumerate(data_loader), desc=f"Caching Batch {batch_num}", total=len(caching_ds))
+            for j, item in progress_bar:
+                if item and isinstance(item, dict) and 'error' not in item:
+                    original_volume_name = base_ds[j]['volume_name']
+                    successfully_cached_volumes.add(original_volume_name)
+
+            files_to_clean = downloaded_volume_names.intersection(successfully_cached_volumes)
+            if files_to_clean:
+                logger.info(f"[Batch {batch_num}] Cleaning up {len(files_to_clean)} downloaded raw NIfTI files...")
+                cleaned_count = 0
+                for volume_name in files_to_clean:
+                    try:
+                        file_path_to_delete = get_dynamic_image_path(Path(config.paths.img_dir), volume_name, config.paths.dir_structure)
+                        if file_path_to_delete.exists():
+                            os.remove(file_path_to_delete)
+                            cleaned_count += 1
+                    except OSError as e:
+                        logger.error(f"Failed to delete {volume_name}: {e}")
+                logger.info(f"[Batch {batch_num}] Cleanup complete. Deleted {cleaned_count} files.")
+            else:
+                logger.info(f"[Batch {batch_num}] No downloaded files to clean up for this batch.")
+            
+            # Clean up the temporary Hugging Face cache for the current batch
+            logger.info(f"[Batch {batch_num}] Cleaning up temporary Hugging Face cache: {batch_hf_cache_dir}")
+            shutil.rmtree(batch_hf_cache_dir)
+    
+    finally:
+        # Final cleanup of the parent temporary directory
+        if main_temp_hf_dir.exists():
+            logger.info(f"Cleaning up main temporary cache directory: {main_temp_hf_dir}")
+            shutil.rmtree(main_temp_hf_dir)
+
 
 def cleanup_existing_raw_files(config, full_df: pd.DataFrame, cache_dir: Path):
     """
@@ -164,7 +185,7 @@ def cleanup_existing_raw_files(config, full_df: pd.DataFrame, cache_dir: Path):
     volumes_to_check = full_df['VolumeName'].tolist()
     
     for volume_name in tqdm(volumes_to_check, desc="Cleaning up existing files"):
-        raw_file_path = get_dynamic_image_path(config.paths.img_dir, volume_name, config.paths.dir_structure)
+        raw_file_path = get_dynamic_image_path(Path(config.paths.img_dir), volume_name, config.paths.dir_structure)
         if not raw_file_path.exists():
             continue
 
@@ -182,7 +203,7 @@ def cleanup_existing_raw_files(config, full_df: pd.DataFrame, cache_dir: Path):
     logger.info(f"Cleanup complete. Deleted {cleaned_count} raw NIfTI files that were already cached.")
 
 
-def main(config_path: str, num_workers: int, batch_size: int, clean_local: bool, use_hf_cache: bool):
+def main(config_path: str, num_workers: int, batch_size: int, clean_local: bool):
     config = load_config(config_path)
 
     train_csv_path = Path(config.paths.data_dir) / config.paths.data_subsets.train
@@ -193,7 +214,7 @@ def main(config_path: str, num_workers: int, batch_size: int, clean_local: bool,
     logger.info(f"Loaded a total of {len(full_df)} unique volumes for cache analysis.")
 
     preprocess_transforms = get_preprocessing_transforms(config)
-    cache_dir = get_or_create_cache_subdirectory(config.paths.cache_dir, preprocess_transforms, split="unified")
+    cache_dir = get_or_create_cache_subdirectory(Path(config.paths.cache_dir), preprocess_transforms, split="unified")
     missing_files_df = analyze_cache_state(full_df, cache_dir)
     
     num_missing = len(missing_files_df)
@@ -207,7 +228,7 @@ def main(config_path: str, num_workers: int, batch_size: int, clean_local: bool,
             if input("\nProceed with processing missing files in batches? (Y/N): ").strip().lower() != 'y':
                 logger.info("Process declined by user.")
             else:
-                process_in_batches(config, missing_files_df, batch_size, num_workers, use_hf_cache)
+                process_in_batches(config, missing_files_df, batch_size, num_workers)
         except (EOFError, KeyboardInterrupt):
             logger.info("\nProcess cancelled by user.")
     else:
@@ -231,11 +252,6 @@ if __name__ == '__main__':
         action='store_true',
         help="If set, delete any local raw NIfTI files that already have a corresponding cache file."
     )
-    parser.add_argument(
-        '--use-hf-cache',
-        action='store_true',
-        help="If set, use a persistent Hugging Face cache. Default is to use temporary files."
-    )
     args = parser.parse_args()
     
-    main(args.config, args.num_workers, args.batch_size, args.clean_local_raw_files, args.use_hf_cache)
+    main(args.config, args.num_workers, args.batch_size, args.clean_local_raw_files)

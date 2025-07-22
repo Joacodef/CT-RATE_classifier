@@ -54,15 +54,14 @@ def find_missing_files(csv_path: Path, img_dir: Path, structure: str) -> list[st
     ]
 
 
-def download_worker(volume_name: str, config: SimpleNamespace, use_hf_cache: bool = False) -> str:
+def download_worker(volume_name: str, config: SimpleNamespace, hf_cache_dir: Path) -> str:
     """
     Worker function to download a single volume from Hugging Face.
 
     Args:
         volume_name: The name of the volume to download.
         config: A namespace object containing download and path configurations.
-        use_hf_cache: If False, downloads to a temporary dir that is auto-cleaned.
-                      If True, uses the persistent cache dir from the config.
+        hf_cache_dir: The path to the temporary cache directory for Hugging Face downloads.
     """
     cfg_downloads = config.downloads
     try:
@@ -70,10 +69,7 @@ def download_worker(volume_name: str, config: SimpleNamespace, use_hf_cache: boo
         repo_subfolder = f"dataset/{parts[0]}_fixed/{parts[0]}_{parts[1]}/{parts[0]}_{parts[1]}_{parts[2]}" if len(parts) >= 3 else f"dataset/{parts[0]}"
         correct_filename = f"{volume_name.replace('.nii.gz', '')}.nii.gz"
         
-        # Determine the cache directory based on the flag
-        cache_directory = cfg_downloads.hf_cache_dir if use_hf_cache else None
-        if cache_directory is None:
-            logger.debug("Downloading to a temporary directory (no persistent HF cache).")
+        logger.debug(f"Downloading {volume_name} to temporary cache: {hf_cache_dir}")
         
         temp_file_path = hf_hub_download(
             repo_id=cfg_downloads.repo_id,
@@ -81,7 +77,7 @@ def download_worker(volume_name: str, config: SimpleNamespace, use_hf_cache: boo
             token=cfg_downloads.hf_token,
             subfolder=repo_subfolder,
             filename=correct_filename,
-            cache_dir=cache_directory,
+            cache_dir=hf_cache_dir,
             resume_download=True
         )
 
@@ -97,7 +93,7 @@ def download_worker(volume_name: str, config: SimpleNamespace, use_hf_cache: boo
         return f"FAIL: {volume_name}"
 
 
-def main(config_path: str, use_hf_cache: bool):
+def main(config_path: str):
     """Main orchestrator function that finds and downloads missing dataset files."""
     logger.info("--- Starting Dataset Verification and Download Script ---")
     config = load_config(config_path)
@@ -106,22 +102,32 @@ def main(config_path: str, use_hf_cache: bool):
     logger.info(f"Using dataset definition from: {full_dataset_path}")
 
     all_missing_files = find_missing_files(
-        full_dataset_path, config.paths.img_dir, config.paths.dir_structure
+        full_dataset_path, Path(config.paths.img_dir), config.paths.dir_structure
     )
+    
+    # Define and create a temporary directory for HF downloads
+    temp_hf_cache_dir = Path(config.paths.data_dir) / "temp_hf_download_cache"
+    temp_hf_cache_dir.mkdir(exist_ok=True)
 
-    if all_missing_files:
-        logger.info(f"\nFound {len(all_missing_files)} total missing files.")
-        try:
+    try:
+        if all_missing_files:
+            logger.info(f"\nFound {len(all_missing_files)} total missing files.")
             if input("Do you want to download them? (Y/N): ").strip().lower() == 'y':
-                task = partial(download_worker, config=config, use_hf_cache=use_hf_cache)
+                task = partial(download_worker, config=config, hf_cache_dir=temp_hf_cache_dir)
                 with ThreadPoolExecutor(max_workers=config.downloads.max_workers) as executor:
                     list(tqdm(executor.map(task, all_missing_files), total=len(all_missing_files), desc="Downloading"))
             else:
                 logger.info("Download declined by user.")
-        except (EOFError, KeyboardInterrupt):
-            logger.info("\nDownload cancelled by user.")
-    else:
-        logger.info("All dataset files specified in the CSV are already present.")
+        else:
+            logger.info("All dataset files specified in the CSV are already present.")
+
+    except (EOFError, KeyboardInterrupt):
+        logger.info("\nDownload cancelled by user.")
+    finally:
+        # Ensure the temporary cache is always cleaned up
+        logger.info(f"Cleaning up temporary Hugging Face cache directory: {temp_hf_cache_dir}")
+        shutil.rmtree(temp_hf_cache_dir)
+        logger.info("Temporary cache cleanup complete.")
 
 
 if __name__ == '__main__':
@@ -134,11 +140,6 @@ if __name__ == '__main__':
         default='configs/config.yaml',
         help='Path to the YAML config file.'
     )
-    parser.add_argument(
-        '--use-hf-cache',
-        action='store_true',
-        help="If set, use a persistent Hugging Face cache. Default is to use temporary files."
-    )
     args = parser.parse_args()
     
-    main(args.config, args.use_hf_cache)
+    main(args.config)
