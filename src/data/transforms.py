@@ -75,7 +75,7 @@ def get_preprocessing_transforms(config: Any) -> Compose:
             b_min=0.0, b_max=1.0,
             clip=True
         ),
-        Resized(keys="image", spatial_size=config.image_processing.target_shape_dhw, mode="area"),
+        Resized(keys="image", spatial_size=config.image_processing.target_shape_dhw, mode="trilinear", anti_aliasing=True),
         
         # Ensure correct data types.
         EnsureTyped(keys="image", dtype=config.torch_dtype),
