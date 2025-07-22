@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-from sklearn.model_selection import StratifiedGroupKFold
+import numpy as np
+from skmultilearn.model_selection import IterativeStratification
 
 # Add project root to the Python path
 project_root = Path(__file__).resolve().parents[2]
@@ -24,13 +25,16 @@ logger = logging.getLogger(__name__)
 
 def create_kfold_splits(config, n_splits: int, output_dir: Path):
     """
-    Creates stratified, grouped k-fold splits from a master data file.
+    Creates multi-label stratified k-fold splits from a master data file.
 
     This function ensures that:
-    1.  Folds are stratified to maintain the same distribution of multi-label
-        disease classes across each fold.
-    2.  Scans from the same patient (group) are kept within the same fold to
-        prevent data leakage between training and validation sets.
+    1.  Folds are stratified to maintain the same distribution of each individual
+        disease label across each fold using iterative stratification.
+
+    Warning:
+        This method does NOT perform grouping by patient. Scans from the same
+        patient may be split between the training and validation sets, which
+        can lead to data leakage and overly optimistic validation scores.
 
     Args:
         config: The loaded project configuration object.
@@ -55,40 +59,38 @@ def create_kfold_splits(config, n_splits: int, output_dir: Path):
     logger.info(f"Loading all labels from: {labels_path}")
     df_labels = pd.read_csv(labels_path)
 
-    # Merge master list with labels to create the full dataset for splitting
     df_full = pd.merge(df_master, df_labels, on="VolumeName", how="inner")
     logger.info(f"Merged dataset created with {len(df_full)} volumes.")
 
-    # --- 2. Create Grouping and Stratification Keys ---
-    
-    # Create a patient/subject ID for grouping
-    # Assumes VolumeName format like 'train_12345_a_1' -> 'train_12345'
-    logger.info("Generating patient IDs for grouping...")
-    df_full['patient_id'] = df_full['VolumeName'].str.split('_').str[:2].str.join('_')
-    
-    # Create a single stratification key from the combination of disease labels
+    # --- 2. Define Labels for Splitting ---
     disease_cols = config.pathologies.columns
-    logger.info(f"Generating stratification key based on columns: {disease_cols}")
-    df_full["stratify_key"] = (
-        df_full[disease_cols].astype(str).agg("-".join, axis=1)
-    )
-
-    # --- 3. Perform Stratified Group K-Fold Split ---
-    logger.info(f"Performing Stratified Group K-Fold split with k={n_splits}...")
-    
-    sgkf = StratifiedGroupKFold(
-        n_splits=n_splits, shuffle=True, random_state=config.training.seed
-    )
+    logger.info(f"Using multi-label stratification based on columns: {disease_cols}")
 
     X = df_full[["VolumeName"]]
-    y = df_full["stratify_key"]
-    groups = df_full["patient_id"]
+    y = df_full[disease_cols]
+
+    # --- 3. Perform Multi-Label Stratified K-Fold Split ---
+    logger.warning(
+        "Performing multi-label stratification WITHOUT patient grouping. "
+        "Data leakage may occur if a patient has multiple scans."
+    )
+    logger.info(f"Performing Iterative Stratification split with k={n_splits}...")
+
+    X_np = X.to_numpy()
+    y_np = y.to_numpy()
+
+    # NOTE: The 'shuffle' and 'random_state' arguments are not supported by this
+    # implementation of IterativeStratification and have been removed.
+    kfold = IterativeStratification(
+        n_splits=n_splits,
+        order=1
+    )
 
     # --- 4. Save the Split Files ---
     logger.info(f"Saving split files to: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for fold_idx, (train_indices, valid_indices) in enumerate(sgkf.split(X, y, groups)):
+    for fold_idx, (train_indices, valid_indices) in enumerate(kfold.split(X_np, y_np)):
         df_train = X.iloc[train_indices]
         df_valid = X.iloc[valid_indices]
 
@@ -103,14 +105,14 @@ def create_kfold_splits(config, n_splits: int, output_dir: Path):
             f"Train={len(df_train)}, Valid={len(df_valid)}. "
             f"Saved to {train_path.name}, {valid_path.name}"
         )
-    
+
     logger.info("K-fold split creation complete.")
 
 
 def main():
     """Main function to parse arguments and initiate k-fold split creation."""
     parser = argparse.ArgumentParser(
-        description="Create stratified, grouped k-fold splits for cross-validation.",
+        description="Create multi-label stratified k-fold splits for cross-validation.",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
@@ -129,15 +131,15 @@ def main():
         "--output-dir",
         type=str,
         required=True,
-        help="Directory to save the fold split CSV files (e.g., 'data/splits/kfold_5').",
+        help="Directory to save the fold split CSV files (e.g., 'splits/kfold_5').",
     )
     args = parser.parse_args()
 
     config = load_config(args.config)
-    
-    # The output path needs to be relative to the project directory
-    output_path = config.paths.data_dir / args.output_dir
-    
+
+    data_dir = Path(config.paths.data_dir)
+    output_path = data_dir / args.output_dir
+
     create_kfold_splits(config, args.n_splits, output_path)
 
 
