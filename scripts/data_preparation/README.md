@@ -13,7 +13,7 @@ For setting up the project from scratch, these scripts should be run in the foll
 3.  **`create_kfold_splits.py`**: Use the master list to generate your cross-validation folds (e.g., for 5-fold CV).
 4.  **`create_training_subsets_hpo.py`**: Run this on a specific training fold (e.g., `train_fold_0.csv`) to create smaller subsets for hyperparameter optimization.
 
----
+-----
 
 ## Script Descriptions
 
@@ -22,11 +22,10 @@ For setting up the project from scratch, these scripts should be run in the foll
 This is typically the first script you will run. It takes the raw metadata and applies a set of exclusion rules defined within the script (e.g., removing brain scans, scans with missing data). It produces a single `filtered_master_list.csv` that serves as the definitive source for all subsequent data splitting and processing.
 
 **Usage:**
+
 ```bash
-# NOTE: This script contains hardcoded paths.
-# You must review and edit the paths inside the script before running.
-python scripts/data_preparation/create_filtered_dataset.py
-````
+python scripts/data_preparation/create_filtered_dataset.py --config configs/config.yaml
+```
 
 -----
 
@@ -75,4 +74,3 @@ python scripts/data_preparation/create_training_subsets_hpo.py \
     --input-file data/splits/kfold_5/train_fold_0.csv \
     --fractions 0.5 0.2 0.05
 ```
-
