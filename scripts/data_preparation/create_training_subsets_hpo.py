@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from skmultilearn.model_selection import IterativeStratification
 
 # Add project root to the Python path to allow importing from 'config'
 project_root = Path(__file__).resolve().parents[2]
@@ -26,29 +26,20 @@ def create_training_subsets(
     config,
     input_file: str,
     fractions: list[float],
-    subsample_strategy: str,
 ):
     """
-    Creates nested subsets from a given training data file using a chosen strategy.
+    Creates nested, multi-label stratified subsets from a training data file.
 
-    This function first loads a list of volume identifiers from the specified
-    input file and merges them with the full set of pathology labels from the
-    path defined in the configuration (`paths.labels.all`).
-
-    It then generates nested subsets based on the selected `subsample_strategy`:
-    - 'stratified': Preserves the original distribution of diseases in subsets.
-      Useful for creating representative, smaller versions of the dataset.
-    - 'uniform': Actively undersamples majority classes to create subsets with a
-      more uniform label distribution. This is achieved through inverse
-      frequency weighting and can help mitigate class imbalance.
+    This function loads a list of volume identifiers, merges them with the full
+    set of pathology labels, and then uses Iterative Stratification to generate
+    the nested subsets. This approach is robust for multi-label data and
+    ensures that the distribution of each pathology is preserved across subsets.
 
     Args:
         config: The loaded configuration object.
         input_file (str): Path to the input CSV file containing 'VolumeName'.
         fractions (list[float]): A list of fractions for the subsets
                                  (e.g., [0.5, 0.2, 0.05]).
-        subsample_strategy (str): The method for subsampling ('stratified' or
-                                  'uniform').
     """
     input_path = Path(input_file)
     if not input_path.exists():
@@ -67,33 +58,21 @@ def create_training_subsets(
     df_labels = pd.read_csv(labels_path)
 
     logger.info("Merging volume list with labels on 'VolumeName'")
-    df_full = pd.merge(df_volumes, df_labels, on="VolumeName", how="left")
+    df_full = pd.merge(df_volumes, df_labels, on="VolumeName", how="inner")
 
-    # --- Multi-Label Stratification/Sampling Setup ---
+    # --- Multi-Label Stratification Setup ---
     disease_cols = config.pathologies.columns
-    seed = config.training.seed
-    missing_cols = [col for col in disease_cols if col not in df_full.columns]
-    if missing_cols:
+    if any(col not in df_full.columns for col in disease_cols):
         logger.error(
-            "Label columns not found in dataframe: %s", missing_cols
+            "One or more pathology columns from the config are missing in the dataframe."
         )
         return
 
-    if df_full[disease_cols].isnull().any().any():
-        logger.warning(
-            "Some volumes in the input file did not have corresponding labels "
-            "and will be dropped."
-        )
-        df_full.dropna(subset=disease_cols, inplace=True)
-
     logger.info(
-        f"Using '{subsample_strategy}' strategy based on columns: {disease_cols}"
-    )
-    df_full["stratify_key"] = (
-        df_full[disease_cols].astype(str).agg("-".join, axis=1)
+        f"Using multi-label iterative stratification based on columns: {disease_cols}"
     )
 
-    # --- Create Nested Subsets ---
+    # --- Create Nested Subsets using Iterative Stratification ---
     fractions.sort(reverse=True)
     subsets = {}
     df_current = df_full.copy()
@@ -115,57 +94,29 @@ def create_training_subsets(
             int(current_fraction * 100),
         )
 
-        split_ratio = frac / current_fraction
+        split_ratio = 1.0 - (frac / current_fraction)
 
-        # --- Select Subsampling Strategy ---
-        if subsample_strategy == "stratified":
-            # This logic prevents crashes when a class has only one sample.
-            stratify_for_split = df_current["stratify_key"].copy()
-            class_counts = stratify_for_split.value_counts()
-            rare_classes = class_counts[class_counts < 2].index
+        # Prepare data for stratification
+        X = df_current[["VolumeName"]].to_numpy()
+        y = df_current[disease_cols].to_numpy()
 
-            stratify_argument = stratify_for_split
-            if not rare_classes.empty:
-                logger.warning(
-                    f"Found {len(rare_classes)} class(es) with only 1 sample. "
-                    "Grouping them into a '_RARE_' category for this split."
-                )
-                is_rare = stratify_for_split.isin(rare_classes)
-                stratify_for_split.loc[is_rare] = "_RARE_"
-
-                if stratify_for_split.value_counts().get("_RARE_", 0) < 2:
-                    logger.error(
-                        "Cannot stratify: rare class group has fewer than 2 members. "
-                        "Falling back to a non-stratified split for this step."
-                    )
-                    stratify_argument = None
-
-            _, df_subset = train_test_split(
-                df_current,
-                test_size=split_ratio,
-                random_state=seed,
-                stratify=stratify_argument,
+        # Perform a 2-fold split to get the desired fraction
+        stratifier = IterativeStratification(
+            n_splits=2, order=1, sample_distribution_per_fold=[split_ratio, 1.0 - split_ratio]
+        )
+        
+        try:
+            # The first split will be the 'remainder', the second will be our new subset
+            _, subset_indices = next(stratifier.split(X, y))
+            df_subset = df_current.iloc[subset_indices]
+        except ValueError as e:
+            logger.error(
+                f"Stratification failed for fraction {frac}. This can happen if the "
+                "dataset is too small or has a very complex label structure. "
+                f"Error: {e}"
             )
-        elif subsample_strategy == "uniform":
-            target_size = int(len(df_current) * split_ratio)
-            
-            # Calculate inverse frequency weights
-            class_frequencies = df_current["stratify_key"].value_counts()
-            weights = 1 / df_current["stratify_key"].map(class_frequencies)
-            
-            logger.info(
-                f"Performing weighted sampling to get a more uniform "
-                f"distribution. Target size: {target_size}"
-            )
+            return
 
-            df_subset = df_current.sample(
-                n=target_size,
-                weights=weights,
-                random_state=seed,
-                replace=False,  # Ensure we don't sample the same item twice
-            )
-        else:
-            raise ValueError(f"Unknown strategy: {subsample_strategy}")
 
         subsets[frac] = df_subset
         df_current = df_subset.copy()
@@ -181,7 +132,7 @@ def create_training_subsets(
         output_filename = f"{input_path.stem}_{percent}_percent.csv"
         output_path = output_dir / output_filename
 
-        df_to_save = df_subset.drop(columns=["stratify_key"] + disease_cols)
+        df_to_save = df_subset[["VolumeName"]]
         df_to_save.to_csv(output_path, index=False)
         logger.info(f"   - Saved {output_path} (size: {len(df_to_save)})")
 
@@ -192,7 +143,7 @@ def create_training_subsets(
 
     for frac, df_subset in subsets.items():
         subset_dist = df_subset[disease_cols].mean().rename(
-            f"{int(frac*100)}%_{subsample_strategy}"
+            f"{int(frac*100)}%"
         )
         verification_results.append(subset_dist)
 
@@ -219,7 +170,7 @@ def main():
         "--input-file",
         type=str,
         required=True,
-        help="Path to the input CSV file to be split (e.g., 'data/splits/train.csv').",
+        help="Path to the input CSV file to be split (e.g., 'data/splits/train_fold_0.csv').",
     )
     parser.add_argument(
         "--fractions",
@@ -228,23 +179,11 @@ def main():
         required=True,
         help=("A list of fractions for the subsets, e.g., --fractions 0.5 0.2"),
     )
-    parser.add_argument(
-        "--subsample-strategy",
-        type=str,
-        default="stratified",
-        choices=["stratified", "uniform"],
-        help=(
-            "The strategy for creating subsets:\n"
-            " - 'stratified': (Default) Keep original label distribution.\n"
-            " - 'uniform': Undersample majority classes for a more balanced "
-            "label distribution."
-        ),
-    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     create_training_subsets(
-        config, args.input_file, args.fractions, args.subsample_strategy
+        config, args.input_file, args.fractions
     )
 
 

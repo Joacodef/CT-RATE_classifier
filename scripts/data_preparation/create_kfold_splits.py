@@ -1,4 +1,3 @@
-# scripts/create_kfold_splits.py
 import argparse
 import logging
 import sys

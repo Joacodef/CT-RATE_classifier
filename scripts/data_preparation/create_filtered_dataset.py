@@ -2,8 +2,12 @@ import argparse
 import logging
 import re
 from pathlib import Path
+import sys
 
 import pandas as pd
+
+project_root = Path(__file__).resolve().parents[2]
+sys.path.append(str(project_root))
 
 from src.config.config import load_config
 
@@ -12,6 +16,20 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def get_patient_id(volume_name: str) -> str:
+    """
+    Extracts the patient ID from a volume name string.
+    Assumes the format "split_patientID_scanID_reconstructionID".
+    Example: "train_123_a_1" -> "123"
+    """
+    if not isinstance(volume_name, str) or not volume_name:
+        return ""
+    parts = volume_name.split("_")
+    if len(parts) > 1:
+        return parts[1]
+    return ""
 
 
 def normalize_name_from_path(path_str: str) -> str:
@@ -39,8 +57,8 @@ def natural_sort_key(s: str):
 
 def create_filtered_dataset(config):
     """
-    Generates a filtered list of volume names by excluding specified scans
-    using correct normalization and sequential, mutually exclusive logic.
+    Generates a filtered list of volumes by excluding all scans from any patient
+    who appears in the exclusion lists, preventing data leakage.
     """
     logger.info("Starting dataset filtering process...")
 
@@ -61,78 +79,65 @@ def create_filtered_dataset(config):
         )
         return
 
-    # --- 2. Load EXCLUSION lists ---
-    exact_match_exclusions = set()
-    try:
-        with open(config.paths.exclusion_files.brain_scans, "r") as f:
-            paths = [line.strip() for line in f if line.strip()]
-            exact_match_exclusions.update({normalize_name_from_path(p) for p in paths})
-        logger.info(
-            f"Loaded {len(paths)} brain scan volumes for exact-match exclusion."
-        )
-    except FileNotFoundError:
-        logger.warning(
-            f"File not found: {config.paths.exclusion_files.brain_scans}. Skipping."
-        )
+    # --- 2. Identify all PATIENT IDs to exclude ---
+    patient_ids_to_exclude = set()
 
-    try:
-        with open(config.paths.exclusion_files.missing_z, "r") as f:
-            paths = [line.strip() for line in f if line.strip()]
-            exact_match_exclusions.update({normalize_name_from_path(p) for p in paths})
-        logger.info(
-            f"Loaded {len(paths)} missing z-space volumes for exact-match exclusion."
-        )
-    except FileNotFoundError:
-        logger.warning(
-            f"File not found: {config.paths.exclusion_files.missing_z}. Skipping."
-        )
+    # From brain_scans.txt and missing_z_space.txt
+    exclusion_files = {
+        "brain_scans": config.paths.data_dir / config.paths.exclusion_files.brain_scans,
+        "missing_z": config.paths.data_dir / config.paths.exclusion_files.missing_z,
+    }
 
-    logger.info(
-        f"Total unique volumes for exact-match exclusion: {len(exact_match_exclusions)}"
-    )
+    for name, path in exclusion_files.items():
+        try:
+            with open(path, "r") as f:
+                lines = [line.strip() for line in f if line.strip()]
+                normalized_names = {normalize_name_from_path(p) for p in lines}
+                patient_ids = {get_patient_id(n) for n in normalized_names}
+                patient_ids_to_exclude.update(patient_ids)
+                logger.info(
+                    f"Found {len(patient_ids)} unique patient IDs to exclude from {name} file."
+                )
+        except FileNotFoundError:
+            logger.warning(f"File not found: {path}. Skipping.")
 
-    manual_label_prefixes = set()
+    # From manual_labels.csv
     try:
-        manual_exclude_df = pd.read_csv(config.paths.exclusion_files.manual_labels)
-        manual_label_prefixes = {
+        manual_exclude_df = pd.read_csv(config.paths.data_dir / config.paths.exclusion_files.manual_labels)
+        manual_volume_names = {
             name.strip() for name in manual_exclude_df["VolumeName"].dropna()
         }
+        patient_ids = {get_patient_id(n) for n in manual_volume_names}
+        patient_ids_to_exclude.update(patient_ids)
         logger.info(
-            f"Loaded {len(manual_label_prefixes)} prefixes for prefix-based exclusion."
+            f"Found {len(patient_ids)} unique patient IDs to exclude from manual labels."
         )
     except FileNotFoundError:
         logger.warning(
             f"File not found: {config.paths.exclusion_files.manual_labels}. Skipping."
         )
 
-    # --- 3. Perform Sequential Filtering ---
-    final_filtered_list = []
-    removed_by_exact = 0
-    removed_by_prefix = 0
+    # Remove any empty strings that might have resulted from parsing errors
+    patient_ids_to_exclude.discard("")
 
-    prefixes_tuple = tuple(manual_label_prefixes) if manual_label_prefixes else None
-
-    for raw_name in all_volume_names_raw:
-        normalized_name_for_check = normalize_name_from_path(raw_name)
-
-        if normalized_name_for_check in exact_match_exclusions:
-            removed_by_exact += 1
-            continue
-
-        if prefixes_tuple and raw_name.startswith(prefixes_tuple):
-            removed_by_prefix += 1
-            continue
-
-        final_filtered_list.append(raw_name)
-
-    logger.info(f"Removed {removed_by_exact} volumes by exact match.")
     logger.info(
-        f"Removed {removed_by_prefix} volumes by prefix match (from the remainder)."
+        f"Total unique patients to exclude across all lists: {len(patient_ids_to_exclude)}"
     )
 
-    # --- 4. Final Count and Save ---
+    # --- 3. Perform Patient-Level Filtering ---
+    final_filtered_list = []
+    removed_count = 0
 
-    # Sort the list using the natural sort key
+    for raw_name in all_volume_names_raw:
+        patient_id = get_patient_id(raw_name)
+        if patient_id in patient_ids_to_exclude:
+            removed_count += 1
+            continue
+        final_filtered_list.append(raw_name)
+
+    logger.info(f"Removed {removed_count} volumes belonging to excluded patients.")
+
+    # --- 4. Final Count and Save ---
     final_filtered_list.sort(key=natural_sort_key)
     logger.info("Final list sorted numerically.")
 
@@ -140,22 +145,16 @@ def create_filtered_dataset(config):
         f"Total volumes remaining after all filtering: {len(final_filtered_list)}"
     )
 
-    expected_final_count = (
-        len(all_volume_names_raw) - removed_by_exact - removed_by_prefix
-    )
+    expected_final_count = len(all_volume_names_raw) - removed_count
     logger.info(
-        f"Verification: {len(all_volume_names_raw)} - {removed_by_exact} - {removed_by_prefix} = {expected_final_count}"
+        f"Verification: {len(all_volume_names_raw)} - {removed_count} = {expected_final_count}"
     )
     if len(final_filtered_list) != expected_final_count:
         logger.error("LOGIC ERROR: Final count does not match verification count!")
 
     output_df = pd.DataFrame(final_filtered_list, columns=["VolumeName"])
-    # Use full_dataset_csv if available, otherwise fall back to the old key
-    if hasattr(config.paths, "full_dataset_csv"):
-        output_path = config.paths.full_dataset_csv
-    else:
-        output_path = config.paths.data_dir / config.paths.output_filename
-
+    output_path = Path(config.paths.data_dir) / config.paths.output_filename
+    
     output_df.to_csv(output_path, index=False)
     logger.info(f"Successfully saved the filtered volume list to: {output_path}")
 
