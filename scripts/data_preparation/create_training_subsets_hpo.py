@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from skmultilearn.model_selection import IterativeStratification
+from skmultilearn.model_selection import iterative_train_test_split
 
 # Add project root to the Python path to allow importing from 'config'
 project_root = Path(__file__).resolve().parents[2]
@@ -94,25 +94,31 @@ def create_training_subsets(
             int(current_fraction * 100),
         )
 
-        split_ratio = 1.0 - (frac / current_fraction)
+        # The goal is to create a nested subset. For example, to get a 20% subset from a 50% subset,
+        # we need to take 40% of the current data (0.2 / 0.5 = 0.4).
+        # iterative_train_test_split splits into train and test. We want our new subset to be the 'test' set.
+        subset_size_ratio = frac / current_fraction
 
-        # Prepare data for stratification
-        X = df_current[["VolumeName"]].to_numpy()
-        y = df_current[disease_cols].to_numpy()
+        # We will split the indices of the dataframe to avoid data duplication issues.
+        # We pass an array of indices (0, 1, 2, ...) as X and the labels as y.
+        indices = np.arange(df_current.shape[0]).reshape(-1, 1)
+        y_labels = df_current[disease_cols].to_numpy()
 
-        # Perform a 2-fold split to get the desired fraction
-        stratifier = IterativeStratification(
-            n_splits=2, order=1, sample_distribution_per_fold=[split_ratio, 1.0 - split_ratio]
-        )
-        
         try:
-            # The first split will be the 'remainder', the second will be our new subset
-            _, subset_indices = next(stratifier.split(X, y))
-            df_subset = df_current.iloc[subset_indices]
+            # The function returns: X_train, y_train, X_test, y_test
+            # We want X_test, which contains the *indices* for our new subset.
+            # My previous error was capturing the fourth element (y_test) instead of the third (X_test).
+            _, _, subset_indices, _ = iterative_train_test_split(
+                indices, y_labels, test_size=subset_size_ratio
+            )
+
+            # We use these indices to select the correct rows from the original dataframe.
+            df_subset = df_current.iloc[subset_indices.flatten()]
+
         except ValueError as e:
             logger.error(
-                f"Stratification failed for fraction {frac}. This can happen if the "
-                "dataset is too small or has a very complex label structure. "
+                f"Stratification failed for fraction {frac}. This can happen if "
+                "the dataset is too small for the requested split. "
                 f"Error: {e}"
             )
             return
