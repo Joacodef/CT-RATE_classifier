@@ -1,27 +1,11 @@
-"""
-Unit tests for data/utils.py
-
-Tests cover:
-- Path construction for various filename formats.
-- Handling of filenames with and without extensions.
-- Correct formation of hierarchical paths based on filename parts.
-"""
-
 import sys
 from pathlib import Path
 
-# Add project root to path for imports if running tests from a different directory
-# This assumes the tests directory is structured as tests/unit/data/test_utils.py
-# and the project root is four levels up.
 project_root = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'src'))
 
 import pytest
-
-# Ensure the module to be tested can be imported
-# If 'data' is a package, this should work.
-# If utils.py is directly under 'data', this is correct.
 from data.utils import get_dynamic_image_path
 
 class TestGetDynamicImagePath:

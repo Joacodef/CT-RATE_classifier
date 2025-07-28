@@ -1,12 +1,3 @@
-# tests/unit/evaluation/test_reporting.py
-"""
-Unit tests for src/evaluation/reporting.py
-
-This module tests the report generation functions, ensuring they can handle
-mock training history and configuration objects to produce the expected outputs,
-both visual (mocked) and data-based (CSV, JSON).
-"""
-
 import sys
 import json
 from pathlib import Path
@@ -17,7 +8,6 @@ import pytest
 import pandas as pd
 import numpy as np
 
-# Add project root to Python path
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 

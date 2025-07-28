@@ -1,12 +1,3 @@
-# tests/integration/data/test_caching_integration.py
-"""
-Integration test for the full data caching pipeline.
-
-This test verifies that the combination of CTMetadataDataset, PersistentDataset,
-and LabelAttacherDataset correctly processes and caches data, ensuring the
-cache itself is self-contained and free of labels.
-"""
-
 import sys
 from pathlib import Path
 import pytest
@@ -16,11 +7,9 @@ import numpy as np
 import nibabel as nib
 from types import SimpleNamespace
 
-# Add the project root to the Python path
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 
-# Imports for the components to be tested
 from src.data.dataset import CTMetadataDataset, LabelAttacherDataset
 from src.data.transforms import get_preprocessing_transforms
 from src.data.cache_utils import get_or_create_cache_subdirectory, deterministic_hash

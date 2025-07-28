@@ -1,5 +1,3 @@
-# scripts/data_preparation/verify_and_download.py
-
 import argparse
 import logging
 import shutil

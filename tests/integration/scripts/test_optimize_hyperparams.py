@@ -1,12 +1,3 @@
-# tests/integration/scripts/test_optimize_hyperparams.py
-"""
-Unit and integration tests for scripts/optimize_hyperparams.py
-
-This module tests the hyperparameter optimization script, focusing on the
-objective function's logic and the main function's setup of the Optuna study.
-Extensive mocking is used to avoid running actual training or optimization.
-"""
-
 import sys
 import pytest
 from unittest.mock import patch, MagicMock, ANY
@@ -16,7 +7,6 @@ import argparse
 import torch
 import optuna
 
-# Add project root to Python path
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 

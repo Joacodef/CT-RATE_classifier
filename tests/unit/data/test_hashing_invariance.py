@@ -7,7 +7,6 @@ import sys
 
 from monai.transforms import Compose, Spacingd, EnsureChannelFirstd
 
-# Add the project root to the Python path to allow src imports
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 

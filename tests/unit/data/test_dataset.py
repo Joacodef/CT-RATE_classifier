@@ -1,8 +1,3 @@
-# tests/unit/data/test_dataset.py
-"""
-Unit tests for src/data/dataset.py
-"""
-
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -13,11 +8,9 @@ import pandas as pd
 import torch
 import nibabel as nib
 
-# Add the project root to the Python path to allow src imports
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 
-# Import the classes to be tested and the path utility
 from src.data.dataset import CTMetadataDataset, LabelAttacherDataset, ApplyTransforms
 from src.data.utils import get_dynamic_image_path
 

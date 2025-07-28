@@ -1,4 +1,3 @@
-# tests/unit/training/test_trainer.py
 """
 Unit tests for src/training/trainer.py
 

@@ -1,7 +1,3 @@
-# tests/integration/scripts/test_trainer.py
-"""
-Integration tests for the main training script: scripts/train.py.
-"""
 import sys
 from pathlib import Path
 import pytest
@@ -11,7 +7,6 @@ import nibabel as nib
 import numpy as np
 from unittest.mock import patch
 
-# Import the main function from the script to be tested
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 
