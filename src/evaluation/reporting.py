@@ -12,7 +12,19 @@ logger = logging.getLogger(__name__)
 
 
 def json_serializable(obj):
-    """Convert numpy types and other non-serializable objects to JSON-serializable types"""
+    """
+    Converts non-serializable objects into types that are JSON-compatible.
+
+    This function handles common data types found in scientific computing
+    libraries like NumPy and standard Python objects that `json.dump` does not
+    natively support.
+
+    Args:
+        obj (Any): The object to convert.
+
+    Returns:
+        Any: A JSON-serializable representation of the object.
+    """
     if isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
@@ -30,7 +42,16 @@ def json_serializable(obj):
 
 
 def safe_json_dump(data, file_path):
-    """Safely dump data to JSON, converting non-serializable objects"""
+    """
+    Recursively converts and saves a dictionary to a JSON file.
+
+    This function traverses a dictionary and uses `json_serializable` to ensure
+    all its values are compatible with JSON before writing to a file.
+
+    Args:
+        data (Dict): The dictionary to save.
+        file_path (Path): The path to the output JSON file.
+    """
     def convert_item(item):
         if isinstance(item, dict):
             return {k: convert_item(v) for k, v in item.items()}
@@ -46,7 +67,20 @@ def safe_json_dump(data, file_path):
 
 
 def generate_final_report(history: dict, config, best_epoch_idx: int):
-    """Generate comprehensive training report with visualizations"""
+    """
+    Generates a comprehensive visual report of the training process.
+
+    This function creates a multi-panel plot summarizing the model's training
+    and validation performance over epochs. It saves the report as both a PNG
+    and a PDF file in the specified output directory.
+
+    Args:
+        history (Dict): A dictionary containing training history, including
+                        'train_loss', 'valid_loss', and 'metrics' per epoch.
+        config (Any): The configuration object containing model and training parameters.
+        best_epoch_idx (int): The zero-based index of the epoch with the best
+                              performance, used for highlighting.
+    """
     
     logger.info("Generating final training report...")
     
@@ -268,7 +302,19 @@ def generate_final_report(history: dict, config, best_epoch_idx: int):
 
 
 def generate_csv_report(history: dict, config, best_epoch_idx: int):
-    """Generate detailed CSV report with all metrics"""
+    """
+    Generates detailed data files summarizing the training run.
+
+    This function creates two files:
+    1. A CSV file (`training_metrics_detailed.csv`) with per-epoch metrics.
+    2. A JSON file (`training_summary.json`) with final summary statistics
+       and key configuration parameters.
+
+    Args:
+        history (Dict): The training history dictionary.
+        config (Any): The configuration object for the run.
+        best_epoch_idx (int): The zero-based index of the best epoch.
+    """
     
     # Create a detailed metrics DataFrame
     metrics_data = []

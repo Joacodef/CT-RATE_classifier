@@ -1,17 +1,15 @@
 # Data Preparation Scripts (`/scripts/data_preparation`)
 
-This directory contains all the scripts needed to take the raw dataset and transform it into a well-structured, clean, and complete set of files ready for the caching and training stages.
-
-These scripts handle everything from filtering out unwanted scans to creating robust cross-validation splits.
+This directory contains the scripts required to process the raw dataset into a structured and filtered set of files suitable for the caching and training stages. The scripts handle operations from initial filtering to the creation of cross-validation splits.
 
 ## Recommended Order of Operations
 
-For setting up the project from scratch, these scripts should be run in the following order:
+The following sequence is recommended for initial project setup:
 
-1.  **`create_filtered_dataset.py`**: Run this once to generate the master list of all volumes to be used in the project.
-2.  **`verify_and_download.py`**: Run this to ensure you have all the necessary `.nii.gz` files downloaded locally.
-3.  **`create_kfold_splits.py`**: Use the master list to generate your cross-validation folds (e.g., for 5-fold CV).
-4.  **`create_training_subsets_hpo.py`**: Run this on a specific training fold (e.g., `train_fold_0.csv`) to create smaller subsets for hyperparameter optimization.
+1.  **`create_filtered_dataset.py`**: Generates the master list of all volumes to be used.
+2.  **`verify_and_download.py`**: Ensures all required `.nii.gz` files are downloaded locally.
+3.  **`create_kfold_splits.py`**: Uses the master list to generate cross-validation folds.
+4.  **`create_training_subsets_hpo.py`**: Generates smaller, stratified subsets from a training fold for hyperparameter optimization.
 
 -----
 
@@ -19,7 +17,7 @@ For setting up the project from scratch, these scripts should be run in the foll
 
 ### `create_filtered_dataset.py`
 
-This is typically the first script you will run. It takes the raw metadata and applies a set of exclusion rules defined within the script (e.g., removing brain scans, scans with missing data). It produces a single `filtered_master_list.csv` that serves as the definitive source for all subsequent data splitting and processing.
+This script generates a definitive master list of volumes for the project. It loads the complete list of available volumes and applies patient-level filtering by aggregating patient IDs from multiple exclusion files (e.g., brain scans, scans with missing metadata). If a patient appears in any exclusion list, all of that patient's scans are removed from the final dataset to prevent data leakage. The final list is saved as a CSV file.
 
 **Usage:**
 
@@ -31,12 +29,11 @@ python scripts/data_preparation/create_filtered_dataset.py --config configs/conf
 
 ### `verify_and_download.py`
 
-This script ensures your local dataset is complete. It checks which files from your dataset CSV are missing from your local image directory and, if any are found, prompts you to download them from the specified Hugging Face repository.
+This script ensures the local dataset is complete by cross-referencing a dataset CSV file with the local image directory. It identifies any required NIfTI files that are missing locally and downloads them from the specified Hugging Face repository using a multi-threaded downloader.
 
 **Usage:**
 
 ```bash
-# Check for and download missing files based on the config
 python scripts/data_preparation/verify_and_download.py --config configs/config.yaml
 ```
 
@@ -44,10 +41,10 @@ python scripts/data_preparation/verify_and_download.py --config configs/config.y
 
 ### `create_kfold_splits.py`
 
-This script creates robust, stratified, and grouped k-fold cross-validation splits from the master dataset list. This is crucial for reliable model evaluation, as it:
+This script generates k-fold cross-validation splits from the master dataset list. The process is designed to be robust for reliable model evaluation by implementing two key strategies:
 
-1.  **Groups** scans from the same patient to prevent data leakage between training and validation sets.
-2.  **Stratifies** the splits to ensure the distribution of pathologies is balanced across all folds.
+1.  **Patient Grouping**: It ensures all scans from the same patient are kept together within a single split (either training or validation) to prevent data leakage.
+2.  **Iterative Stratification**: It stratifies the patient-level splits to maintain a balanced distribution of all pathology labels across every fold.
 
 **Usage:**
 
@@ -63,7 +60,7 @@ python scripts/data_preparation/create_kfold_splits.py \
 
 ### `create_training_subsets_hpo.py`
 
-This script is used to prepare for hyperparameter optimization. It takes a training data file (e.g., a single fold from `create_kfold_splits.py`) and creates smaller, stratified, and nested subsets (e.g., 5%, 20%, 50% of the data). This allows the `optimize_hyperparams.py` script to test many parameter combinations quickly on smaller data before promoting the best ones to larger datasets.
+This script prepares data for hyperparameter optimization by creating smaller, nested subsets from a larger training file (e.g., `train_fold_0.csv`). It uses multi-label iterative stratification to ensure that the pathology distribution in the smaller subsets (e.g., 5%, 20%, 50%) is representative of the original set. This allows for faster evaluation of multiple hyperparameter combinations.
 
 **Usage:**
 

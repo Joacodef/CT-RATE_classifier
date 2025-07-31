@@ -4,45 +4,40 @@ This directory contains scripts dedicated to creating, maintaining, and debuggin
 
 ## What is Caching?
 
-In this project, caching is the process of pre-computing the results of the entire data preprocessing pipeline. Each raw 3D volume is loaded, resampled, resized, and normalized, and the final tensor is saved to disk. During training, the data loader can then fetch these pre-processed tensors directly from the disk, bypassing the computationally expensive preprocessing steps and significantly accelerating the training loop.
+In this project, caching is the process of pre-computing the results of the data preprocessing pipeline. Each raw 3D volume is loaded, resampled, resized, and normalized, and the final tensor is saved to disk. During training, the `DataLoader` can then fetch these pre-processed tensors directly, bypassing the computationally expensive preprocessing steps.
 
-The cache directory's name is determined by a hash of the preprocessing transforms, so a new cache is automatically created if you change any image processing settings (like target spacing or shape).
+The cache directory's name is determined by a hash of the preprocessing transforms, so a new cache is automatically created if any image processing settings (like target spacing or shape) are changed.
 
----
+-----
 
 ## Script Descriptions
 
 ### `generate_cache.py`
 
-This is the primary script for building the cache. It iterates through the entire dataset, applies the preprocessing transforms defined in the configuration, and saves each resulting tensor to the cache directory. The script is designed to be run in parallel on multiple machines or instances by using sharding.
+This is the primary script for building the cache. It first analyzes the required dataset and the existing cache to identify only the volumes that are missing. It then processes these missing files in batches, where for each batch it will:
+
+1.  Download the required raw NIfTI files from Hugging Face.
+2.  Use a MONAI `PersistentDataset` and a multi-worker `DataLoader` to apply the preprocessing transforms and save the resulting tensors to the persistent cache directory.
+3.  Clean up the downloaded raw NIfTI files for that batch after they have been successfully cached.
+
+This batch-based approach allows for efficient cache generation without requiring all raw data to be stored locally at once.
 
 **Usage:**
 
 ```bash
 # Generate the cache for the entire dataset using 8 worker processes
+# and a batch size of 100 for downloads.
 python scripts/cache_management/generate_cache.py \
     --config configs/config.yaml \
-    --num-workers 8
-
-# Generate the cache using 2 machines (shards)
-# On machine 1:
-python scripts/cache_management/generate_cache.py \
-    --config configs/config.yaml \
-    --num-shards 2 \
-    --shard-id 0
-
-# On machine 2:
-python scripts/cache_management/generate_cache.py \
-    --config configs/config.yaml \
-    --num-shards 2 \
-    --shard-id 1
-````
+    --num-workers 8 \
+    --batch-size 100
+```
 
 -----
 
 ### `verify_cache_integrity.py`
 
-This is a maintenance utility for checking the health of an existing cache. If the caching process was interrupted, some files might be corrupted. This script scans the cache directory, attempts to load every `.pt` file, and reports any that are unreadable.
+This is a maintenance utility for checking the health of an existing cache. If the caching process was interrupted, some files might be corrupted. This script scans the cache directory and uses a pool of worker processes to attempt to load every `.pt` file, reporting any that are unreadable.
 
 **Usage:**
 

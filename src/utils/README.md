@@ -1,13 +1,13 @@
 # Utilities Module (`/src/utils`)
 
-This directory contains general-purpose utility functions that provide support across the entire project. These helpers are not specific to modeling, data handling, or training but offer essential functionalities like logging configuration and performance optimization.
+This directory contains general-purpose utility functions that provide support across the entire project. These helpers are not specific to modeling, data handling, or training but offer functionalities like logging configuration and performance optimization.
 
 ## Core Components
 
-1.  [**`logging_config.py`**](#logging_configpy): A simple module to standardize logging configuration.
-2.  [**`torch_utils.py`**](#torch_utilspy): A module to configure PyTorch for optimal performance.
+1.  [**`logging_config.py`**](https://www.google.com/search?q=%23logging_configpy): A module to standardize logging configuration.
+2.  [**`torch_utils.py`**](https://www.google.com/search?q=%23torch_utilspy): A module to configure PyTorch for performance.
 
----
+-----
 
 ### `logging_config.py`
 
@@ -15,19 +15,18 @@ This file provides a centralized function to set up consistent logging for any s
 
 **Key Functions:**
 
-* **`setup_logging`**: Initializes the root logger to output messages of `INFO` level and above. It configures two handlers:
-    * `FileHandler`: Writes all log messages to a specified file (e.g., `training.log`).
-    * `StreamHandler`: Prints all log messages to the console.
-    This ensures that script execution is tracked both on-screen and in a persistent log file.
+  * **`setup_logging`**: Initializes the root logger to output messages of `INFO` level and above. It configures two handlers:
+      * `FileHandler`: Writes all log messages to a specified file (e.g., `ct_3d_training.log`).
+      * `StreamHandler`: Prints all log messages to the console.
 
 ### `torch_utils.py`
 
-This file contains a utility function to apply several performance-enhancing settings to the PyTorch backend.
+This file contains a utility function to apply several performance-related settings to the PyTorch backend.
 
 **Key Functions:**
 
-* **`setup_torch_optimizations`**: This function should be called at the beginning of a script to configure PyTorch for better performance on compatible hardware (e.g., NVIDIA Ampere architecture and newer). It enables:
-    * `torch.backends.cudnn.benchmark = True`: Allows cuDNN to find the best algorithm for the hardware.
-    * `torch.backends.cuda.matmul.allow_tf32 = True`: Enables the use of TensorFloat-32 cores for matrix multiplication.
-    * `torch.backends.cudnn.allow_tf32 = True`: Enables the use of TensorFloat-32 cores for cuDNN convolutions.
-    * It also sets the number of threads used by PyTorch for CPU operations.
+  * **`setup_torch_optimizations`**: This function configures PyTorch settings for hardware like NVIDIA Ampere architecture and newer. It enables:
+      * `torch.backends.cudnn.benchmark = True`: Allows cuDNN to find the best algorithm for the hardware.
+      * `torch.backends.cuda.matmul.allow_tf32 = True`: Enables the use of TensorFloat-32 cores for matrix multiplication.
+      * `torch.backends.cudnn.allow_tf32 = True`: Enables the use of TensorFloat-32 cores for cuDNN convolutions.
+      * It also sets the number of threads used by PyTorch for CPU operations.

@@ -1,12 +1,3 @@
-# src/data/transforms.py
-"""
-This module defines the transformation pipelines for data preprocessing.
-
-Centralizing the transforms ensures that the same preprocessing is applied
-consistently, whether during dataset verification, training, or inference.
-This is crucial for the integrity of the caching mechanism.
-"""
-
 from typing import List, Any, Dict, Hashable
 
 from monai.transforms import (

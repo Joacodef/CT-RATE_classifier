@@ -2,8 +2,7 @@
 
 import numpy as np
 from sklearn.metrics import (
-    roc_auc_score, f1_score, accuracy_score, precision_score, 
-    recall_score, balanced_accuracy_score
+    roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
 )
 from typing import List, Dict
 import logging
