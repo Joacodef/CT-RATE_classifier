@@ -39,7 +39,7 @@ def json_serial_converter(o):
         return str(o)
     if isinstance(o, np.random.RandomState):
         # The state of a random generator is complex and not meant for serialization.
-        # We only need to know that a RandomState object exists.
+        # We only need to know that a RandomState object exists for the hash.
         return "np.random.RandomState object"
     
     # If the type is not recognized, raise the default error.
@@ -51,11 +51,12 @@ def worker_init_fn(worker_id):
     Initialization function for DataLoader workers.
 
     This function overrides torch.load within each worker process to force
-    `weights_only=False`. This is necessary to allow MONAI's PersistentDataset
-    to load cached complex objects (like MetaTensors) without triggering
-    PyTorch's stricter security checks.
+    `weights_only=False`. This is a necessary workaround for PyTorch versions
+    where this argument defaults to True, which prevents MONAI's PersistentDataset
+    from loading cached complex objects (like MetaTensors) that are not just model weights.
     """
     # Create a new version of torch.load that has weights_only=False by default.
+    # This ensures that our custom objects can be unpickled by the worker processes.
     custom_load = functools.partial(torch.load, weights_only=False)
     
     # Replace the original torch.load with our custom version for this worker.
@@ -66,9 +67,9 @@ import inspect
 
 def get_transform_params(obj):
     """
-    Recursively gets all public, non-callable parameters of an object
-    for stable hashing and JSON serialization. This version uses the `inspect`
-    module for a more robust and comprehensive approach.
+    Recursively gets all public, non-callable parameters of a MONAI transform
+    for stable hashing and JSON serialization. This uses `inspect` for a robust
+    approach to extracting the configuration of a transform pipeline.
     """
     # --- Base Cases: Handle non-decomposable objects ---
     if isinstance(obj, (list, tuple)):
@@ -89,7 +90,10 @@ def get_transform_params(obj):
         if name.startswith('_') or inspect.ismethod(value) or inspect.isfunction(value):
             continue
 
-        # Skip attributes that are known to be irrelevant or cause issues.
+        # Attributes in this list are excluded from the hash. They are either
+        # internal state variables (like 'R' for random state), dynamic properties
+        # ('lazy'), or irrelevant metadata ('VERSION') that would make the
+        # cache hash unstable across runs.
         if name in ['f', 'g', 'R', 'lazy', 'backend', 'end_pending', 'progress', 'VERSION']:
             continue
         
@@ -101,13 +105,15 @@ def get_transform_params(obj):
 
 def deterministic_hash(item_to_hash: any) -> bytes:
     """
-    Creates a deterministic MD5 hash for an object.
+    Creates a deterministic MD5 hash for an object, crucial for MONAI's cache.
 
-    This function handles two cases to work correctly with MONAI's PersistentDataset:
-    1. If the input is a dictionary containing 'volume_name', it hashes ONLY the volume_name.
-       This makes the file hash stable and independent of other metadata.
-    2. Otherwise, it serializes the entire object (like a list of transforms) to JSON
-       and hashes that string. This is used for creating the cache directory hash.
+    This function has two distinct behaviors required by PersistentDataset:
+    1. Hashing a data item: If the input is a dictionary containing 'volume_name',
+       it hashes ONLY the volume_name. This ensures each cached file has a
+       stable, predictable name based on its unique identifier.
+    2. Hashing a transform pipeline: For any other input (like the transform config),
+       it serializes the entire object to a stable JSON string and hashes that.
+       This generates the unique hash for the cache *directory* itself.
     """
     # Check if the item is a data dictionary. Use 'volume_name' (lowercase v).
     if isinstance(item_to_hash, dict) and "volume_name" in item_to_hash:
@@ -125,7 +131,8 @@ def deterministic_hash(item_to_hash: any) -> bytes:
 
 def get_or_create_cache_subdirectory(base_cache_dir: Path, transforms: Compose, split: str) -> Path:
     """
-    Determines the correct cache subdirectory based on transform parameters.
+    Determines the correct cache subdirectory based on a hash of transform parameters.
+    If the directory doesn't exist, it is created.
     """
     # First, get the complete, serializable dictionary of transform parameters.
     transform_params = get_transform_params(transforms)

@@ -9,7 +9,6 @@ The module is organized into files based on the model architecture:
 1.  [**`resnet3d.py`**](https://www.google.com/search?q=%23resnet3dpy): A 3D adaptation of the ResNet architecture.
 2.  [**`densenet3d.py`**](https://www.google.com/search?q=%23densenet3dpy): A 3D adaptation of the DenseNet architecture.
 3.  [**`vit3d.py`**](https://www.google.com/search?q=%23vit3dpy): A 3D adaptation of the Vision Transformer (ViT) architecture.
-4.  [**`losses.py`**](https://www.google.com/search?q=%23lossespy): Contains loss functions for training.
 
 -----
 
@@ -66,13 +65,3 @@ This file implements a 3D Vision Transformer (ViT), adapting the transformer arc
   * `vit_small_3d`
   * `vit_base_3d`
   * `vit_large_3d`
-
------
-
-### `losses.py`
-
-This module contains loss functions used during training.
-
-**Key Components:**
-
-  * **`FocalLoss`**: An implementation of the Focal Loss function. It is a modification of the standard binary cross-entropy loss that addresses class imbalance by down-weighting the loss assigned to well-classified examples.

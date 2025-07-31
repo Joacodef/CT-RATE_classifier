@@ -25,7 +25,7 @@ from .vit3d import (
     vit_base_3d,
     vit_large_3d
 )
-from .losses import FocalLoss
+from monai.losses import FocalLoss
 
 __all__ = [
     # ResNet models

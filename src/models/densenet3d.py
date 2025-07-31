@@ -1,10 +1,3 @@
-"""
-3D DenseNet implementation for CT volume classification
-
-Based on the original DenseNet paper but adapted for 3D medical imaging.
-Includes memory optimization techniques for handling large 3D volumes.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,17 +7,25 @@ import torch.utils.checkpoint as cp
 
 
 class _DenseLayer(nn.Module):
-    """Dense layer with bottleneck design for 3D volumes"""
+    """
+    A single 3D DenseNet layer, which includes a bottleneck and a 3x3x3 convolution.
+
+    This layer takes all previous feature maps as input, processes them through a
+    bottleneck to reduce computational cost, and then produces a new feature map
+    (the "growth rate") which is concatenated to the input for the next layer.
+    """
     
     def __init__(self, num_input_features: int, growth_rate: int, bn_size: int, 
                  drop_rate: float, memory_efficient: bool = False) -> None:
         super().__init__()
-        
+
+        # Bottleneck layer: 1x1x1 Conv to reduce the number of feature-maps.        
         self.norm1 = nn.BatchNorm3d(num_input_features)
         self.relu1 = nn.ReLU(inplace=True)
         self.conv1 = nn.Conv3d(num_input_features, bn_size * growth_rate,
                               kernel_size=1, stride=1, bias=False)
         
+        # Main convolutional layer: 3x3x3 Conv to produce new features.
         self.norm2 = nn.BatchNorm3d(bn_size * growth_rate)
         self.relu2 = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv3d(bn_size * growth_rate, growth_rate,
@@ -34,24 +35,35 @@ class _DenseLayer(nn.Module):
         self.memory_efficient = memory_efficient
     
     def bn_function(self, inputs: List[torch.Tensor]) -> torch.Tensor:
-        """Bottleneck function for efficient computation"""
+        """
+        The bottleneck function, which is the part of the layer that can be
+        checkpointed for memory savings. It concatenates features and passes
+        them through the first convolution.
+        """
         concated_features = torch.cat(inputs, 1)
         bottleneck_output = self.conv1(self.relu1(self.norm1(concated_features)))
         return bottleneck_output
     
     def any_requires_grad(self, input: List[torch.Tensor]) -> bool:
-        """Check if any tensor requires gradient"""
+        """Check if any tensor in a list requires a gradient."""
         for tensor in input:
             if tensor.requires_grad:
                 return True
         return False
     
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """
+        Defines the forward pass for the dense layer. It supports a memory-efficient
+        path using gradient checkpointing.
+        """
         if isinstance(input, torch.Tensor):
             prev_features = [input]
         else:
             prev_features = input
         
+        # If memory_efficient is enabled, use gradient checkpointing on the
+        # bottleneck function. This saves memory by not storing intermediate
+        # activations for the backward pass.
         if self.memory_efficient and self.any_requires_grad(prev_features):
             if torch.jit.is_scripting():
                 raise Exception("Memory Efficient not supported in JIT")
@@ -60,6 +72,7 @@ class _DenseLayer(nn.Module):
         else:
             bottleneck_output = self.bn_function(prev_features)
         
+        # The second convolution is applied to produce the new feature map.
         new_features = self.conv2(self.relu2(self.norm2(bottleneck_output)))
         if self.drop_rate > 0:
             new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
@@ -67,13 +80,17 @@ class _DenseLayer(nn.Module):
         return new_features
     
     def call_checkpoint_bottleneck(self, input: List[torch.Tensor]) -> torch.Tensor:
+        """A wrapper to apply checkpointing to the bottleneck function."""
         def closure(*inputs):
             return self.bn_function(inputs)
         return cp.checkpoint(closure, *input)
 
 
 class _DenseBlock(nn.ModuleDict):
-    """Dense block consisting of multiple dense layers"""
+    """
+    A block of multiple dense layers. In a dense block, the feature maps of all
+    preceding layers are used as inputs for all subsequent layers.
+    """
     
     def __init__(self, num_layers: int, num_input_features: int, bn_size: int,
                  growth_rate: int, drop_rate: float, memory_efficient: bool = False) -> None:
@@ -81,6 +98,8 @@ class _DenseBlock(nn.ModuleDict):
         
         for i in range(num_layers):
             layer = _DenseLayer(
+                # The input to each new layer is the sum of the initial features
+                # and the features created by all previous layers in the block.
                 num_input_features + i * growth_rate,
                 growth_rate=growth_rate,
                 bn_size=bn_size,
@@ -90,6 +109,10 @@ class _DenseBlock(nn.ModuleDict):
             self.add_module(f'denselayer{i + 1}', layer)
     
     def forward(self, init_features: torch.Tensor) -> torch.Tensor:
+        """
+        The forward pass for the dense block, which iteratively builds upon
+        a list of feature maps.
+        """
         features = [init_features]
         for name, layer in self.items():
             new_features = layer(features)
@@ -98,14 +121,19 @@ class _DenseBlock(nn.ModuleDict):
 
 
 class _Transition(nn.Sequential):
-    """Transition layer to reduce spatial dimensions and channel count"""
+    """
+    A transition layer between dense blocks. It reduces the number of channels
+    and downsamples the spatial dimensions (height, width, depth).
+    """
     
     def __init__(self, num_input_features: int, num_output_features: int) -> None:
         super().__init__()
         self.add_module('norm', nn.BatchNorm3d(num_input_features))
         self.add_module('relu', nn.ReLU(inplace=True))
+        # 1x1x1 Conv to halve the number of channels.
         self.add_module('conv', nn.Conv3d(num_input_features, num_output_features,
                                          kernel_size=1, stride=1, bias=False))
+        # Average pooling to halve the spatial dimensions.
         self.add_module('pool', nn.AvgPool3d(kernel_size=2, stride=2))
 
 
@@ -120,8 +148,8 @@ class DenseNet3D(nn.Module):
           (i.e. bn_size * k features in the bottleneck layer)
         drop_rate (float): dropout rate after each dense layer
         num_classes (int): number of classification classes
-        memory_efficient (bool): If True, uses checkpointing for memory efficiency
-        use_checkpointing (bool): If True, uses gradient checkpointing
+        memory_efficient (bool): If True, uses checkpointing inside the dense layers.
+        use_checkpointing (bool): If True, uses gradient checkpointing on entire dense blocks.
     """
     
     def __init__(self, growth_rate: int = 32, block_config: Tuple[int, int, int, int] = (6, 12, 24, 16),
@@ -132,7 +160,7 @@ class DenseNet3D(nn.Module):
         
         self.use_checkpointing = use_checkpointing
         
-        # First convolution
+        # The initial convolution layer that processes the input volume.
         self.features = nn.Sequential(OrderedDict([
             ('conv0', nn.Conv3d(1, num_init_features, kernel_size=7, stride=2, padding=3, bias=False)),
             ('norm0', nn.BatchNorm3d(num_init_features)),
@@ -140,7 +168,7 @@ class DenseNet3D(nn.Module):
             ('pool0', nn.MaxPool3d(kernel_size=3, stride=2, padding=1)),
         ]))
         
-        # Each denseblock
+        # Each dense block followed by a transition layer.
         num_features = num_init_features
         for i, num_layers in enumerate(block_config):
             block = _DenseBlock(
@@ -160,10 +188,10 @@ class DenseNet3D(nn.Module):
                 self.features.add_module(f'transition{i + 1}', trans)
                 num_features = num_features // 2
         
-        # Final batch norm
+        # Final batch norm after the last dense block.
         self.features.add_module('norm5', nn.BatchNorm3d(num_features))
         
-        # Classification head
+        # The final classification head of the network.
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool3d((1, 1, 1)),
             nn.Flatten(),
@@ -174,7 +202,7 @@ class DenseNet3D(nn.Module):
             nn.Linear(512, num_classes)
         )
         
-        # Official init from torch repo
+        # Official weight initialization from the torchvision repository.
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
                 nn.init.kaiming_normal_(m.weight)
@@ -185,8 +213,10 @@ class DenseNet3D(nn.Module):
                 nn.init.constant_(m.bias, 0)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """The main forward pass, with an optional checkpointed path."""
         if self.use_checkpointing and self.training:
-            # Split features into chunks for gradient checkpointing
+            # The checkpointed path trades compute for memory by not storing
+            # intermediate activations for the entire feature extractor.
             features = self._forward_features_checkpointed(x)
         else:
             features = self.features(x)
@@ -196,15 +226,19 @@ class DenseNet3D(nn.Module):
         return out
     
     def _forward_features_checkpointed(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass with gradient checkpointing for memory efficiency"""
+        """
+        An alternative forward pass for the feature extractor that applies
+        gradient checkpointing to each dense block. This is highly memory
+        efficient during training.
+        """
         
-        # Initial layers
+        # Initial layers are run normally.
         x = self.features.conv0(x)
         x = self.features.norm0(x)
         x = self.features.relu0(x)
         x = self.features.pool0(x)
         
-        # Dense blocks with checkpointing
+        # Each dense block is wrapped in a checkpoint call.
         x = cp.checkpoint(self.features.denseblock1, x)
         x = self.features.transition1(x)
         
@@ -226,8 +260,8 @@ def densenet121_3d(num_classes: int = 18, memory_efficient: bool = False,
     
     Args:
         num_classes: number of output classes
-        memory_efficient: use memory efficient implementation
-        use_checkpointing: use gradient checkpointing
+        memory_efficient: use memory efficient implementation inside layers
+        use_checkpointing: use gradient checkpointing on entire blocks
     """
     return DenseNet3D(growth_rate=32, block_config=(6, 12, 24, 16), 
                       num_init_features=64, num_classes=num_classes,
@@ -241,8 +275,8 @@ def densenet169_3d(num_classes: int = 18, memory_efficient: bool = False,
     
     Args:
         num_classes: number of output classes
-        memory_efficient: use memory efficient implementation
-        use_checkpointing: use gradient checkpointing
+        memory_efficient: use memory efficient implementation inside layers
+        use_checkpointing: use gradient checkpointing on entire blocks
     """
     return DenseNet3D(growth_rate=32, block_config=(6, 12, 32, 32),
                       num_init_features=64, num_classes=num_classes,
@@ -256,8 +290,8 @@ def densenet201_3d(num_classes: int = 18, memory_efficient: bool = False,
     
     Args:
         num_classes: number of output classes
-        memory_efficient: use memory efficient implementation
-        use_checkpointing: use gradient checkpointing
+        memory_efficient: use memory efficient implementation inside layers
+        use_checkpointing: use gradient checkpointing on entire blocks
     """
     return DenseNet3D(growth_rate=32, block_config=(6, 12, 48, 32),
                       num_init_features=64, num_classes=num_classes,
@@ -271,8 +305,8 @@ def densenet161_3d(num_classes: int = 18, memory_efficient: bool = False,
     
     Args:
         num_classes: number of output classes
-        memory_efficient: use memory efficient implementation
-        use_checkpointing: use gradient checkpointing
+        memory_efficient: use memory efficient implementation inside layers
+        use_checkpointing: use gradient checkpointing on entire blocks
     """
     return DenseNet3D(growth_rate=48, block_config=(6, 12, 36, 24),
                       num_init_features=96, num_classes=num_classes,
@@ -287,8 +321,8 @@ def densenet_small_3d(num_classes: int = 18, memory_efficient: bool = True,
     
     Args:
         num_classes: number of output classes
-        memory_efficient: use memory efficient implementation
-        use_checkpointing: use gradient checkpointing
+        memory_efficient: use memory efficient implementation inside layers
+        use_checkpointing: use gradient checkpointing on entire blocks
     """
     return DenseNet3D(growth_rate=16, block_config=(4, 8, 12, 8),
                       num_init_features=32, num_classes=num_classes,
@@ -302,8 +336,8 @@ def densenet_tiny_3d(num_classes: int = 18, memory_efficient: bool = True,
     
     Args:
         num_classes: number of output classes
-        memory_efficient: use memory efficient implementation
-        use_checkpointing: use gradient checkpointing
+        memory_efficient: use memory efficient implementation inside layers
+        use_checkpointing: use gradient checkpointing on entire blocks
     """
     return DenseNet3D(growth_rate=12, block_config=(3, 6, 9, 6),
                       num_init_features=24, num_classes=num_classes,
