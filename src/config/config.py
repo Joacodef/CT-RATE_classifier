@@ -90,51 +90,58 @@ def load_config(config_path: str | Path) -> SimpleNamespace:
             raise ValueError(f"Unknown torch_dtype '{dtype_str}' in config.")
 
     # 4. Resolve and process paths
-    cfg.paths.base_project_dir = Path(cfg.paths.base_project_dir).resolve()
-    cfg.paths.img_dir = Path(cfg.paths.img_dir).resolve()
-    cfg.paths.cache_dir = Path(cfg.paths.cache_dir).resolve()
+    if hasattr(cfg, 'paths'):
+        if hasattr(cfg.paths, 'base_project_dir'):
+            cfg.paths.base_project_dir = Path(cfg.paths.base_project_dir).resolve()
+        if hasattr(cfg.paths, 'img_dir'):
+            cfg.paths.img_dir = Path(cfg.paths.img_dir).resolve()
+        if hasattr(cfg.paths, 'cache_dir'):
+            cfg.paths.cache_dir = Path(cfg.paths.cache_dir).resolve()
+        if hasattr(cfg.paths, 'output_dir'):
+            cfg.paths.output_dir = Path(cfg.paths.output_dir).resolve()
 
-    cfg.paths.output_dir = Path(cfg.paths.output_dir).resolve()
+        if hasattr(cfg.paths, 'data_dir'):
+            data_dir = Path(cfg.paths.data_dir).resolve()
+            cfg.paths.data_dir = data_dir
 
-    data_dir = Path(cfg.paths.data_dir).resolve()
-    cfg.paths.data_dir = data_dir
+            # Resolve paths relative to the data directory, checking for existence first
+            if hasattr(cfg.paths, 'data_subsets'):
+                if hasattr(cfg.paths.data_subsets, 'train'):
+                    cfg.paths.data_subsets.train = data_dir / cfg.paths.data_subsets.train
+                if hasattr(cfg.paths.data_subsets, 'valid'):
+                    cfg.paths.data_subsets.valid = data_dir / cfg.paths.data_subsets.valid
+            
+            if hasattr(cfg.paths, 'labels'):
+                if hasattr(cfg.paths.labels, 'all'):
+                    cfg.paths.labels.all = data_dir / cfg.paths.labels.all
+                if hasattr(cfg.paths.labels, 'train'):
+                    cfg.paths.labels.train = data_dir / cfg.paths.labels.train
+                if hasattr(cfg.paths.labels, 'valid'):
+                    cfg.paths.labels.valid = data_dir / cfg.paths.labels.valid
 
-    # Resolve paths relative to the data directory
-    cfg.paths.data_subsets.train = (
-        data_dir / cfg.paths.data_subsets.train
-    )
-    cfg.paths.data_subsets.valid = (
-        data_dir / cfg.paths.data_subsets.valid
-    )
-    cfg.paths.labels.train = (
-        data_dir / cfg.paths.labels.train
-    )
-    cfg.paths.labels.valid = (
-        data_dir / cfg.paths.labels.valid
-    )
-    cfg.paths.reports.train = (
-        data_dir / cfg.paths.reports.train
-    )
-    cfg.paths.reports.valid = (
-        data_dir / cfg.paths.reports.valid
-    )
-    cfg.paths.metadata.train = (
-        data_dir / cfg.paths.metadata.train
-    )
-    cfg.paths.metadata.valid = (
-        data_dir / cfg.paths.metadata.valid
-    )
+            if hasattr(cfg.paths, 'reports'):
+                if hasattr(cfg.paths.reports, 'train'):
+                    cfg.paths.reports.train = data_dir / cfg.paths.reports.train
+                if hasattr(cfg.paths.reports, 'valid'):
+                    cfg.paths.reports.valid = data_dir / cfg.paths.reports.valid
+
+            if hasattr(cfg.paths, 'metadata'):
+                if hasattr(cfg.paths.metadata, 'train'):
+                    cfg.paths.metadata.train = data_dir / cfg.paths.metadata.train
+                if hasattr(cfg.paths.metadata, 'valid'):
+                    cfg.paths.metadata.valid = data_dir / cfg.paths.metadata.valid
 
     # 5. Perform final type conversions and add computed values
-    cfg.image_processing.target_spacing = np.array(
-        cfg.image_processing.target_spacing
-    )
-    cfg.model.vit_specific.patch_size = tuple(
-        cfg.model.vit_specific.patch_size
-    )
-    cfg.image_processing.target_shape_dhw = tuple(
-        cfg.image_processing.target_shape_dhw
-    )
-    cfg.pathologies.num_pathologies = len(cfg.pathologies.columns)
+    if hasattr(cfg, 'image_processing'):
+        if hasattr(cfg.image_processing, 'target_spacing'):
+            cfg.image_processing.target_spacing = np.array(cfg.image_processing.target_spacing)
+        if hasattr(cfg.image_processing, 'target_shape_dhw'):
+            cfg.image_processing.target_shape_dhw = tuple(cfg.image_processing.target_shape_dhw)
+
+    if hasattr(cfg, 'model') and hasattr(cfg.model, 'vit_specific') and hasattr(cfg.model.vit_specific, 'patch_size'):
+         cfg.model.vit_specific.patch_size = tuple(cfg.model.vit_specific.patch_size)
+
+    if hasattr(cfg, 'pathologies') and hasattr(cfg.pathologies, 'columns'):
+        cfg.pathologies.num_pathologies = len(cfg.pathologies.columns)
 
     return cfg

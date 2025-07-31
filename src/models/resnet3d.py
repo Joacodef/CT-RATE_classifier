@@ -37,7 +37,7 @@ class BasicBlock3D(nn.Module):
         return out
 
 class ResNet3D(nn.Module):
-    """3D ResNet for CT classification with memory optimizations"""
+    """3D ResNet for CT classification"""
     
     def __init__(self, block, layers, num_classes=18, zero_init_residual=False, 
                  use_checkpointing=False):
