@@ -222,16 +222,23 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         pixel_values = batch["image"].to(device, non_blocking=True)
         labels = batch["label"].to(device, non_blocking=True)
 
-        # Apply augmentations on the GPU, right after moving the data.
+        # Apply augmentations on the GPU by iterating through the batch.
         if augment_transforms:
             augmented_images = []
+            # We iterate through the batch dimension
             for i in range(pixel_values.shape[0]):
-                # Create a dict for a single sample
-                sample = {"image": pixel_values[i]}
+                # Create a dictionary for a single sample, including the label.
+                # The transforms that don't use the 'label' key will ignore it.
+                sample = {"image": pixel_values[i], "label": labels[i]}
+                
+                # Apply the entire augmentation pipeline to the single sample.
                 augmented_sample = augment_transforms(sample)
+                
+                # Collect the augmented image. The label is not needed from here
+                # as it is not modified and we already have the `labels` tensor.
                 augmented_images.append(augmented_sample["image"])
             
-            # Stack the individually augmented images back into a batch tensor
+            # Reconstruct the batch from the list of augmented images.
             pixel_values = torch.stack(augmented_images)
 
         if use_amp and scaler is not None:
