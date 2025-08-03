@@ -224,10 +224,15 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
 
         # Apply augmentations on the GPU, right after moving the data.
         if augment_transforms:
-            # Create a dictionary for MONAI's dictionary-based transforms
-            gpu_batch = {"image": pixel_values, "label": labels}
-            gpu_batch = augment_transforms(gpu_batch)
-            pixel_values = gpu_batch["image"]
+            augmented_images = []
+            for i in range(pixel_values.shape[0]):
+                # Create a dict for a single sample
+                sample = {"image": pixel_values[i]}
+                augmented_sample = augment_transforms(sample)
+                augmented_images.append(augmented_sample["image"])
+            
+            # Stack the individually augmented images back into a batch tensor
+            pixel_values = torch.stack(augmented_images)
 
         if use_amp and scaler is not None:
             # Determine the dtype for mixed precision.
