@@ -125,7 +125,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scaler=None):
         Tuple[int, Dict[str, Any]]: A tuple containing the epoch number from the
                                     checkpoint and a dictionary of the saved metrics.
     """
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     if optimizer is not None:

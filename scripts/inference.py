@@ -93,7 +93,7 @@ class CTInference:
         model = create_model(self.config)
 
         try:
-            checkpoint = torch.load(model_path, map_location=self.device)
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
             # Handle both dictionary-based checkpoints and raw state_dict files
             if 'model_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['model_state_dict'])

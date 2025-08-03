@@ -34,9 +34,9 @@ jobs:
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install torch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 --index-url https://download.pytorch.org/whl/cu118
+        python -m pip install --upgrade pip        
         pip install -r requirements.txt
+        pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
 
     - name: Run tests with pytest # Step 4: Executes the test suite.
       run: |

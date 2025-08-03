@@ -9,7 +9,6 @@ from .trainer import (
     train_epoch, 
     validate_epoch
 )
-from .metrics import compute_metrics
 from .utils import (
     EarlyStopping,
     save_checkpoint,
@@ -25,9 +24,6 @@ __all__ = [
     'validate_epoch', 
     'load_and_prepare_data',
     'create_model',
-    
-    # Metrics
-    'compute_metrics',
     
     # Utilities
     'EarlyStopping',

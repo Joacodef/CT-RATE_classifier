@@ -13,7 +13,7 @@ import torch
 from tqdm import tqdm
 
 # --- Project Setup ---
-project_root = Path(__file__).resolve().parents[1]
+project_root = Path(__file__).resolve().parents[2]
 sys.path.append(str(project_root))
 
 from src.config import load_config

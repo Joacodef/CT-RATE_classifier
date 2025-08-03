@@ -31,6 +31,8 @@ from monai.transforms import (
     RandAffined
 )
 from monai.losses import FocalLoss
+from monai.metrics import ROCAUCMetric, FBetaScore
+from monai.metrics.f_beta_score import compute_f_beta_score
 
 
 # Internal imports - models
@@ -43,7 +45,6 @@ from src.data.dataset import CTMetadataDataset, ApplyTransforms, LabelAttacherDa
 from src.data.transforms import get_preprocessing_transforms
 
 # Internal imports - training utilities
-from src.training.metrics import compute_metrics
 from src.training.utils import (
     EarlyStopping,
     save_checkpoint,
@@ -264,55 +265,85 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
     return avg_loss
 
 
-@torch.no_grad() # Disable gradient calculations for validation.
+@torch.no_grad()
 def validate_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
-                   device: torch.device) -> Tuple[float, np.ndarray, np.ndarray]:
-    """Validates the model for one epoch.
-
-    Args:
-        model: The PyTorch model to validate.
-        dataloader: DataLoader for the validation data.
-        criterion: The loss function.
-        device: The device to validate on (e.g., 'cuda', 'cpu').
-
-    Returns:
-        A tuple containing:
-            - avg_loss (float): The average validation loss.
-            - all_predictions (np.ndarray): Concatenated model outputs (logits).
-            - all_labels (np.ndarray): Concatenated true labels.
-    """
-    model.eval() # Set model to evaluation mode.
+                   device: torch.device, pathology_names: list) -> Tuple[float, dict]:
+    """Validates the model for one epoch using MONAI metrics."""
+    model.eval()
     total_loss = 0.0
-    all_predictions = []
-    all_labels = []
+
+    # Instantiate metric objects before the loop
+    auc_metric = ROCAUCMetric()
+    # F1-score is calculated using FBetaScore with beta=1.0
+    f1_metric = FBetaScore(beta=1.0)
 
     progress_bar = tqdm(
         dataloader, 
-        desc=f"[Validation]", 
+        desc="[Validation]", 
         leave=False, 
         unit="batch"
     )
 
     for batch in progress_bar:
-        # Move data to the specified device.
         pixel_values = batch["image"].to(device, non_blocking=True)
         labels = batch["label"].to(device, non_blocking=True)
 
-        # Forward pass.
         outputs = model(pixel_values)
         loss = criterion(outputs, labels)
         total_loss += loss.item()
 
-        # Collect predictions and labels.
-        all_predictions.append(outputs.cpu().numpy())
-        all_labels.append(labels.cpu().numpy())
+        # Convert logits to probabilities for AUC and binary predictions for F1
+        probabilities = torch.sigmoid(outputs)
+        binary_predictions = (probabilities > 0.5).long()
+
+        # Ensure labels are in the correct format (long integers)
+        y_true = labels.long()
+
+        # Update metric objects with correctly formatted tensors
+        auc_metric(probabilities, y_true)
+        f1_metric(binary_predictions, y_true)
 
     avg_loss = total_loss / len(dataloader)
-    # Concatenate predictions and labels from all batches.
-    all_predictions_np = np.concatenate(all_predictions, axis=0)
-    all_labels_np = np.concatenate(all_labels, axis=0)
 
-    return avg_loss, all_predictions_np, all_labels_np
+    # --- Metric Aggregation ---
+    # Aggregate the final results after the loop using the correct methods.
+
+    # 1. AUC Score Aggregation (this part remains the same)
+    auc_macro = auc_metric.aggregate(average="macro")
+    auc_micro = auc_metric.aggregate(average="micro")
+    per_pathology_auc = auc_metric.aggregate(average="none")
+
+    # 2. F1 Score Aggregation (Manual calculation for precision)
+    # Get the raw confusion matrix buffer of shape (N, C, 4) [TP, FP, TN, FN]
+    cm_buffer = f1_metric.get_buffer()
+
+    # Calculate Macro F1: Compute F1 per class, then average the scores.
+    # We first average the confusion matrix components across the batch dimension.
+    f1_macro_per_class = compute_f_beta_score(cm_buffer.nanmean(dim=0), beta=1.0)
+    f1_macro = f1_macro_per_class.nanmean().item()
+
+    # Calculate Micro F1: Sum confusion matrix components across batch and classes, then compute F1.
+    total_cm = cm_buffer.sum(dim=(0, 1))
+    f1_micro = compute_f_beta_score(total_cm, beta=1.0).item()
+
+    # 3. Assemble the final metrics dictionary
+    metrics_dict = {
+        'roc_auc_macro': auc_macro,
+        'roc_auc_micro': auc_micro,
+        'f1_macro': f1_macro,
+        'f1_micro': f1_micro,
+    }
+
+    if per_pathology_auc is not None:
+        for i, name in enumerate(pathology_names):
+            metrics_dict[f"{name}_auc"] = per_pathology_auc[i].item() if hasattr(per_pathology_auc[i], 'item') else per_pathology_auc[i]
+
+    # Reset metrics for the next epoch's validation
+    auc_metric.reset()
+    f1_metric.reset()
+
+    return avg_loss, metrics_dict
+
 
 
 def train_model(
@@ -535,7 +566,7 @@ def train_model(
 
     # Initialize training state variables.
     start_epoch = 0
-    best_auc = 0.0
+    best_f1 = 0.0
     history = {'train_loss': [], 'valid_loss': [], 'metrics': []}
     checkpoint_metrics_loaded = {}
 
@@ -548,7 +579,7 @@ def train_model(
                 config.training.resume_from_checkpoint, model, optimizer, scaler
             )
             start_epoch = checkpoint_epoch + 1  # Set start epoch for training loop.
-            best_auc = checkpoint_metrics_loaded.get('roc_auc_macro', 0.0)
+            best_f1 = checkpoint_metrics_loaded.get('f1_macro', 0.0) # Use F1 score from checkpoint
             
             # Load training history if available.
             history_path = Path(config.training.resume_from_checkpoint).parent / 'training_history.json'
@@ -583,8 +614,8 @@ def train_model(
     # Initialize early stopping mechanism.
     early_stopping = EarlyStopping(patience=config.training.early_stopping_patience, mode='max', min_delta=0.0001)
     # Set best_value for early stopping if resuming.
-    if start_epoch > 0 and best_auc > 0:
-        early_stopping.best_value = best_auc
+    if start_epoch > 0 and best_f1 > 0:
+        early_stopping.best_value = best_f1
 
     logger.info(f"Starting training from epoch {start_epoch + 1}...")
 
@@ -597,11 +628,9 @@ def train_model(
             epoch, config.training.num_epochs, config.training.gradient_accumulation_steps,
         )
         # Validate for one epoch.
-        valid_loss, predictions, labels = validate_epoch(
-            model, valid_loader, criterion, device
+        valid_loss, metrics_for_loop = validate_epoch(
+            model, valid_loader, criterion, device, config.pathologies.columns
         )
-        # Compute validation metrics.
-        metrics_for_loop = compute_metrics(predictions, labels, config.pathologies.columns)
         # Add validation loss to metrics dictionary
         metrics_for_loop['loss'] = valid_loss
 
@@ -612,7 +641,7 @@ def train_model(
         epoch_time = time.time() - epoch_start_time
         logger.info(f"\nEpoch [{epoch+1}/{config.training.num_epochs}] Time: {epoch_time:.2f}s")
         logger.info(f"Train Loss: {train_loss:.4f}, Valid Loss: {valid_loss:.4f}")
-        logger.info(f"Valid AUC (macro): {metrics_for_loop['roc_auc_macro']:.4f}, F1 (macro): {metrics_for_loop['f1_macro']:.4f}")
+        logger.info(f"Valid F1 (macro): {metrics_for_loop['f1_macro']:.4f}, AUC (macro): {metrics_for_loop['roc_auc_macro']:.4f}")
 
         # Record history.
         history['train_loss'].append(train_loss)
@@ -639,15 +668,15 @@ def train_model(
         with open(history_path, 'w') as f: json.dump(history, f, indent=2)
 
         # Check for best model based on validation ROC AUC macro.
-        current_auc = metrics_for_loop.get('roc_auc_macro', 0.0)
-        if current_auc > best_auc:
-            best_auc = current_auc
+        current_f1 = metrics_for_loop.get('f1_macro', 0.0)
+        if current_f1 > best_f1:
+            best_f1 = current_f1
             best_model_path = output_dir / 'best_model.pth'
             save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, best_model_path)
-            logger.info(f"New best model saved with AUC: {best_auc:.4f}")
+            logger.info(f"New best model saved with F1-score: {best_f1:.4f}")
         
         # Check for early stopping.
-        if early_stopping(current_auc):
+        if early_stopping(current_f1):
             logger.info(f"Early stopping triggered at epoch {epoch+1}")
             break  # Exit training loop.
             
@@ -676,9 +705,9 @@ def train_model(
 
     logger.info(f"\nTraining completed!")
     if history['metrics']:
-        best_epoch_idx = np.argmax([m.get('roc_auc_macro', 0.0) for m in history['metrics']])
-        best_auc_final = history['metrics'][best_epoch_idx].get('roc_auc_macro', 0.0)
-        logger.info(f"Best model: Epoch {history.get('metrics')[best_epoch_idx].get('epoch', best_epoch_idx)+1} with AUC {best_auc_final:.4f}")
+        best_epoch_idx = np.argmax([m.get('f1_macro', 0.0) for m in history['metrics']])
+        best_f1_final = history['metrics'][best_epoch_idx].get('f1_macro', 0.0)
+        logger.info(f"Best model: Epoch {history.get('metrics')[best_epoch_idx].get('epoch', best_epoch_idx)+1} with F1-score {best_f1_final:.4f}")
         generate_final_report(history, config, best_epoch_idx=best_epoch_idx)
     else:
         logger.warning("Training history is empty. Skipping final report generation.")

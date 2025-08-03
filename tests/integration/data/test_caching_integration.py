@@ -133,7 +133,7 @@ class TestEndToEndCaching:
         cached_file_path = cached_files[0]
 
         # Directly load the cached data object from disk
-        cached_data = torch.load(cached_file_path)
+        cached_data = torch.load(cached_file_path, weights_only=False)
 
         # Assert that the cached object is a dictionary
         assert isinstance(cached_data, dict)

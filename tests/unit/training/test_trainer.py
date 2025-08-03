@@ -198,8 +198,7 @@ class TestTrainModel:
     @patch('src.training.trainer.LabelAttacherDataset')
     @patch('src.training.trainer.generate_final_report')
     @patch('src.training.trainer.save_checkpoint')
-    @patch('src.training.trainer.compute_metrics')
-    @patch('src.training.trainer.validate_epoch')
+    @patch('src.training.trainer.validate_epoch') # Keep this mock
     @patch('src.training.trainer.train_epoch')
     @patch('src.training.trainer.create_model')
     @patch('src.training.trainer.load_and_prepare_data')
@@ -214,7 +213,7 @@ class TestTrainModel:
         self, mock_apply_transforms, mock_ctmetadata_dataset, mock_persistent_dataset,
         mock_cache_ds, mock_monai_dataset, mock_dataloader, mock_wandb_init,
         mock_load_data, mock_create_model, mock_train_epoch,
-        mock_validate_epoch, mock_compute_metrics, mock_save_checkpoint,
+        mock_validate_epoch, mock_save_checkpoint, # `mock_compute_metrics` is removed
         mock_generate_report, mock_label_attacher, mock_get_transforms,
         mock_config, use_cache
     ):
@@ -227,8 +226,6 @@ class TestTrainModel:
         mock_config.training.augment = True
 
         # --- Mock Return Values ---
-
-        # FIX 1: The mock dataframe must contain the pathology columns.
         mock_load_data.return_value = (
             pd.DataFrame({'VolumeName': ['train_vol_1'], 'Cardiomegaly': [1], 'Atelectasis': [0]}),
             pd.DataFrame({'VolumeName': ['valid_vol_1'], 'Cardiomegaly': [0], 'Atelectasis': [1]})
@@ -237,13 +234,13 @@ class TestTrainModel:
         mock_create_model.return_value = mock_model
         mock_model.parameters.return_value = nn.Linear(1, 1).parameters()
         mock_train_epoch.return_value = 0.5
-        mock_validate_epoch.return_value = (0.4, np.array([[0.1]]), np.array([[0]]))
-        mock_compute_metrics.return_value = {'roc_auc_macro': 0.85, 'f1_macro': 0.75}
 
-        # FIX 2: The mocked transform function must return a serializable object.
+        # CORRECTED: mock_validate_epoch now returns the final metrics dictionary directly.
+        mock_validate_epoch.return_value = (0.4, {'roc_auc_macro': 0.85, 'f1_macro': 0.75})
+
+        # The mocked transform function must return a serializable object.
         from monai.transforms import Compose
         mock_get_transforms.return_value = Compose([])
-
 
         # --- Mock Data Pipeline Setup ---
         mock_base_train_ds, mock_base_valid_ds = MagicMock(), MagicMock()

@@ -1,26 +1,24 @@
 # Models Module (`/src/models`)
 
-This directory contains the neural network architectures and loss functions for the 3D CT scan classification task. The models are adapted for 3D volumetric data and include memory-saving options like gradient checkpointing.
+This directory contains the neural network architectures for the 3D CT scan classification task. The models are adapted for 3D volumetric data and are built as wrappers around the standardized implementations provided by the `monai` library.
 
 ## Core Components
 
-The module is organized into files based on the model architecture:
+The module is organized into files based on the model architecture. Each file provides a consistent interface for creating models while leveraging the robust `monai` backends.
 
-1.  [**`resnet3d.py`**](https://www.google.com/search?q=%23resnet3dpy): A 3D adaptation of the ResNet architecture.
-2.  [**`densenet3d.py`**](https://www.google.com/search?q=%23densenet3dpy): A 3D adaptation of the DenseNet architecture.
-3.  [**`vit3d.py`**](https://www.google.com/search?q=%23vit3dpy): A 3D adaptation of the Vision Transformer (ViT) architecture.
+1.  [**`resnet3d.py`**](https://www.google.com/search?q=%5Bhttps://www.google.com/search%3Fq%3D%2523resnet3dpy%5D\(https://www.google.com/search%3Fq%3D%2523resnet3dpy\)): A 3D adaptation of the ResNet architecture.
+2.  [**`densenet3d.py`**](https://www.google.com/search?q=%5Bhttps://www.google.com/search%3Fq%3D%2523densenet3dpy%5D\(https://www.google.com/search%3Fq%3D%2523densenet3dpy\)): A 3D adaptation of the DenseNet architecture.
+3.  [**`vit3d.py`**](https://www.google.com/search?q=%5Bhttps://www.google.com/search%3Fq%3D%2523vit3dpy%5D\(https://www.google.com/search%3Fq%3D%2523vit3dpy\)): A 3D adaptation of the Vision Transformer (ViT) architecture.
 
 -----
 
 ### `resnet3d.py`
 
-This file implements a 3D version of the ResNet (Residual Network) architecture for volumetric data. The implementation includes memory optimization through gradient checkpointing.
+This file provides a 3D ResNet (Residual Network) by wrapping `monai.networks.nets.ResNet`. It is configured for single-channel volumetric inputs and includes a custom classification head to match the project's requirements.
 
 **Key Features:**
 
-  * **`ResNet3D`**: The base class for the 3D ResNet model.
-  * **`BasicBlock3D`**: The 3D residual block used in the shallower ResNet variants.
-  * **Gradient Checkpointing**: The `use_checkpointing` flag can be set to trade compute for memory.
+  * **`ResNet3D`**: The base class that wraps the MONAI ResNet model and attaches a custom classification head.
 
 **Available Variants:**
 
@@ -31,15 +29,11 @@ This file implements a 3D version of the ResNet (Residual Network) architecture 
 
 ### `densenet3d.py`
 
-This file provides a 3D implementation of the DenseNet (Densely Connected Convolutional Network) architecture. DenseNets connect each layer to every other layer in a feed-forward fashion.
+This file provides a 3D implementation of the DenseNet (Densely Connected Convolutional Network) architecture by wrapping `monai.networks.nets.DenseNet`. The wrapper ensures the model can be used seamlessly within the existing training framework.
 
 **Key Features:**
 
-  * **`DenseNet3D`**: The main class for the 3D DenseNet model.
-  * **`_DenseLayer` & `_DenseBlock`**: The components that define the dense connectivity pattern.
-  * **Memory Efficiency**: The implementation includes two memory-saving options:
-    1.  `memory_efficient`: An implementation within the dense layers.
-    2.  `use_checkpointing`: Applies gradient checkpointing at the block level.
+  * **`DenseNet3D`**: The main class for the 3D DenseNet model, which integrates MONAI's DenseNet backbone with a custom classification head.
 
 **Available Variants:**
 
@@ -50,14 +44,11 @@ This file provides a 3D implementation of the DenseNet (Densely Connected Convol
 
 ### `vit3d.py`
 
-This file implements a 3D Vision Transformer (ViT), adapting the transformer architecture to volumetric image classification. It divides a 3D volume into non-overlapping patches and treats them as a sequence of tokens.
+This file implements a 3D Vision Transformer (ViT) by wrapping `monai.networks.nets.ViT`. It adapts the powerful transformer architecture for volumetric classification tasks.
 
 **Key Features:**
 
-  * **`VisionTransformer3D`**: The main ViT model class.
-  * **`PatchEmbed3D`**: A layer that converts 3D patches into linear embeddings.
-  * **`MultiHeadAttention3D`**: The self-attention mechanism adapted for 3D patch sequences.
-  * **Gradient Checkpointing**: Includes the `use_checkpointing` flag to reduce memory usage during training.
+  * **`VisionTransformer3D`**: The main ViT model class, which combines the MONAI ViT backbone with a custom classification head suitable for this project.
 
 **Available Variants:**
 

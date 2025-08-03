@@ -210,7 +210,7 @@ class TestEndToEndTrainingFlow:
         
         final_model_path = output_dir / "final_model.pth"
         assert final_model_path.exists()
-        checkpoint = torch.load(final_model_path, map_location=torch.device('cpu'))
+        checkpoint = torch.load(final_model_path, map_location=torch.device('cpu'), weights_only=False)
         assert "model_state_dict" in checkpoint
 
     def test_full_training_resume_flow(self, generate_test_config):
@@ -235,5 +235,5 @@ class TestEndToEndTrainingFlow:
         assert len(history['train_loss']) == 2
         
         final_model_path = output_dir / "final_model.pth"
-        checkpoint = torch.load(final_model_path, map_location=torch.device('cpu'))
+        checkpoint = torch.load(final_model_path, map_location=torch.device('cpu'), weights_only=False)
         assert checkpoint['epoch'] == 1
