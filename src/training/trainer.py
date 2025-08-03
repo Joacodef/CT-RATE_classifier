@@ -177,13 +177,15 @@ def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.Dat
 def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
                 optimizer: torch.optim.Optimizer, scaler: torch.cuda.amp.GradScaler,
                 device: torch.device, epoch: int, total_epochs: int,
+                augment_transforms: Optional[Callable], 
                 gradient_accumulation_steps: int = 1, use_amp: bool = False,
                 use_bf16: bool = False) -> float:
-    """Trains the model for one epoch.
+    """
+    Trains the model for one epoch.
 
     Handles forward pass, loss calculation, backward pass, optimizer step,
-    and logging of training progress. Supports gradient accumulation and
-    Automatic Mixed Precision (AMP).
+    and logging of training progress. Supports gradient accumulation,
+    Automatic Mixed Precision (AMP), and on-the-fly GPU augmentations.
 
     Args:
         model: The PyTorch model to train.
@@ -194,23 +196,24 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         device: The device to train on (e.g., 'cuda', 'cpu').
         epoch: The current epoch number (0-indexed).
         total_epochs: The total number of epochs for training.
-        gradient_accumulation_steps: Number of steps to accumulate gradients before an optimizer step.
+        augment_transforms: A callable pipeline of MONAI transforms to be applied
+                            to the batch on the GPU. If None, no augmentations are applied.
+        gradient_accumulation_steps: Number of steps to accumulate gradients.
         use_amp: Boolean indicating whether to use Automatic Mixed Precision.
         use_bf16: Boolean indicating whether to use bfloat16 for mixed precision.
 
     Returns:
         The average training loss for the epoch.
     """
-    model.train() # Set model to training mode.
+    model.train()  # Set model to training mode.
     total_loss = 0.0
     num_batches = len(dataloader)
-    optimizer.zero_grad() # Initialize gradients to zero.
+    optimizer.zero_grad()  # Initialize gradients to zero.
 
-    # Wrap the dataloader with tqdm for a progress bar
     progress_bar = tqdm(
-        dataloader, 
-        desc=f"Epoch {epoch + 1}/{total_epochs} [Training]", 
-        leave=False, 
+        dataloader,
+        desc=f"Epoch {epoch + 1}/{total_epochs} [Training]",
+        leave=False,
         unit="batch"
     )
 
@@ -219,47 +222,54 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         pixel_values = batch["image"].to(device, non_blocking=True)
         labels = batch["label"].to(device, non_blocking=True)
 
+        # Apply augmentations on the GPU, right after moving the data.
+        if augment_transforms:
+            # Create a dictionary for MONAI's dictionary-based transforms
+            gpu_batch = {"image": pixel_values, "label": labels}
+            gpu_batch = augment_transforms(gpu_batch)
+            pixel_values = gpu_batch["image"]
+
         if use_amp and scaler is not None:
-                # Determine the dtype for mixed precision based on config and hardware support.
-                amp_dtype = torch.bfloat16 if use_bf16 and torch.cuda.is_bf16_supported() else torch.float16
-                with torch.cuda.amp.autocast(dtype=amp_dtype):
-                    outputs = model(pixel_values)
-                    loss = criterion(outputs, labels)
-                    # Normalize loss for gradient accumulation.
-                    loss = loss / gradient_accumulation_steps
-        else:
-                # Standard precision forward pass.
+            # Determine the dtype for mixed precision.
+            amp_dtype = torch.bfloat16 if use_bf16 and torch.cuda.is_bf16_supported() else torch.float16
+            with torch.cuda.amp.autocast(dtype=amp_dtype):
                 outputs = model(pixel_values)
                 loss = criterion(outputs, labels)
                 # Normalize loss for gradient accumulation.
                 loss = loss / gradient_accumulation_steps
+        else:
+            # Standard precision forward pass.
+            outputs = model(pixel_values)
+            loss = criterion(outputs, labels)
+            # Normalize loss for gradient accumulation.
+            loss = loss / gradient_accumulation_steps
 
         if use_amp and scaler is not None:
-                # Scale loss and perform backward pass with AMP.
-                scaler.scale(loss).backward()
+            # Scale loss and perform backward pass with AMP.
+            scaler.scale(loss).backward()
         else:
-                # Standard precision backward pass.
-                loss.backward()
+            # Standard precision backward pass.
+            loss.backward()
 
         # Perform optimizer step after accumulating gradients.
         if (batch_idx + 1) % gradient_accumulation_steps == 0 or (batch_idx + 1) == num_batches:
-                if use_amp and scaler is not None:
-                    # Unscale gradients and step optimizer with AMP.
-                    scaler.step(optimizer)
-                    # Update scaler for next iteration.
-                    scaler.update()
-                else:
-                    # Standard optimizer step.
-                    optimizer.step()
-                # Reset gradients for the next accumulation cycle.
-                optimizer.zero_grad()
+            if use_amp and scaler is not None:
+                # Unscale gradients and step optimizer with AMP.
+                scaler.step(optimizer)
+                # Update scaler for next iteration.
+                scaler.update()
+            else:
+                # Standard optimizer step.
+                optimizer.step()
+            # Reset gradients for the next accumulation cycle.
+            optimizer.zero_grad()
 
-        # We use the un-normalized loss for logging and tracking
+        # We use the un-normalized loss for logging and tracking.
         unnormalized_loss = loss.item() * gradient_accumulation_steps
         total_loss += unnormalized_loss
         
-        # Update the progress bar description with the current batch loss
-        progress_bar.set_postfix(loss=unnormalized_loss)
+        # Update the progress bar description with the current batch loss.
+        progress_bar.set_postfix(loss=f"{unnormalized_loss:.4f}")
 
     avg_loss = total_loss / num_batches
     return avg_loss
@@ -444,22 +454,26 @@ def train_model(
     preprocess_transforms = get_preprocessing_transforms(config)
     
     # Augmentation transforms are defined separately as they are applied after caching.
-    augment_transforms = Compose([
-        RandAffined(
-            keys="image",
-            prob=0.1, 
-            rotate_range=(np.pi / 12, np.pi / 12, np.pi / 12),
-            scale_range=((0.85, 1.15), (0.85, 1.15), (0.85, 1.15)),
-            translate_range=((-20, 20), (-20, 20), (0, 0)),
-            mode="bilinear",
-            padding_mode="zeros",
-            device="cpu" 
-        ),
-        RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.01),
-        RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5),
-        # Final type check after all transforms. Note: only applies to keys that exist.
-        EnsureTyped(keys=["image", "label"], dtype=config.torch_dtype)
-    ])
+    # The augmentations will be passed to the training loop directly.
+    augment_transforms = None
+    if config.training.augment:
+        logger.info("On-the-fly GPU augmentations are enabled.")
+        augment_transforms = Compose([
+            RandAffined(
+                keys="image",
+                prob=0.1,
+                rotate_range=(np.pi / 12, np.pi / 12, np.pi / 12),
+                scale_range=((0.85, 1.15), (0.85, 1.15), (0.85, 1.15)),
+                translate_range=((-20, 20), (-20, 20), (0, 0)),
+                mode="bilinear",
+                padding_mode="zeros",
+                device=device  # Use the main training device
+            ),
+            RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.01),
+            RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5),
+            # Final type check after all transforms.
+            EnsureTyped(keys=["image", "label"], dtype=config.torch_dtype)
+        ])
 
     if config.cache.use_cache:
         logger.info("Persistent caching is enabled.")
@@ -481,9 +495,7 @@ def train_model(
 
         # 5. Attach labels to the cached images on-the-fly.
         train_labeled_ds = LabelAttacherDataset(image_source=train_image_source, labels_df=train_df, pathology_columns=config.pathologies.columns)
-        
-        # 6. Apply augmentations if enabled.
-        train_dataset = ApplyTransforms(train_labeled_ds, augment_transforms) if config.training.augment else train_labeled_ds
+        train_dataset = train_labeled_ds
 
         # --- Validation Data Pipeline (same logic, no augmentation) ---
         base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
@@ -501,7 +513,7 @@ def train_model(
         base_train_ds = CTMetadataDataset(dataframe=train_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
         train_preprocessed_ds = Dataset(data=base_train_ds, transform=preprocess_transforms)
         train_labeled_ds = LabelAttacherDataset(image_source=train_preprocessed_ds, labels_df=train_df, pathology_columns=config.pathologies.columns)
-        train_dataset = ApplyTransforms(train_labeled_ds, augment_transforms) if config.training.augment else train_labeled_ds
+        train_dataset = train_labeled_ds
 
         # --- Validation Data Pipeline (No Caching) ---
         base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
@@ -625,7 +637,11 @@ def train_model(
         # Train for one epoch.
         train_loss = train_epoch(
             model, train_loader, criterion, optimizer, scaler, device,
-            epoch, config.training.num_epochs, config.training.gradient_accumulation_steps,
+            epoch, config.training.num_epochs,
+            augment_transforms=augment_transforms,
+            gradient_accumulation_steps=config.training.gradient_accumulation_steps,
+            use_amp=config.optimization.mixed_precision,
+            use_bf16=config.optimization.use_bf16
         )
         # Validate for one epoch.
         valid_loss, metrics_for_loop = validate_epoch(

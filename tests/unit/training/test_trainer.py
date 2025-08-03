@@ -235,7 +235,6 @@ class TestTrainModel:
         mock_model.parameters.return_value = nn.Linear(1, 1).parameters()
         mock_train_epoch.return_value = 0.5
 
-        # CORRECTED: mock_validate_epoch now returns the final metrics dictionary directly.
         mock_validate_epoch.return_value = (0.4, {'roc_auc_macro': 0.85, 'f1_macro': 0.75})
 
         # The mocked transform function must return a serializable object.
@@ -288,24 +287,24 @@ class TestTrainModel:
 
         # Assert DataLoaders get the correct final datasets with the correct arguments
         mock_dataloader.assert_has_calls([
-            call(
-                mock_augmented_train,
-                batch_size=mock_config.training.batch_size,
-                shuffle=True,
-                num_workers=mock_config.training.num_workers,
-                pin_memory=mock_config.training.pin_memory,
-                persistent_workers=mock_config.training.num_workers > 0,
-                prefetch_factor=mock_config.training.prefetch_factor if mock_config.training.num_workers > 0 else None,
-                worker_init_fn=worker_init_fn
-            ),
-            call(
-                mock_labeled_valid,
-                batch_size=mock_config.training.batch_size,
-                shuffle=False,
-                num_workers=mock_config.training.num_workers,
-                pin_memory=mock_config.training.pin_memory,
-                persistent_workers=mock_config.training.num_workers > 0,
-                prefetch_factor=mock_config.training.prefetch_factor if mock_config.training.num_workers > 0 else None,
-                worker_init_fn=worker_init_fn
-            )
-        ], any_order=False)
+           call(
+               mock_labeled_train, 
+               batch_size=mock_config.training.batch_size,
+               shuffle=True,
+               num_workers=mock_config.training.num_workers,
+               pin_memory=mock_config.training.pin_memory,
+               persistent_workers=mock_config.training.num_workers > 0,
+               prefetch_factor=mock_config.training.prefetch_factor if mock_config.training.num_workers > 0 else None,
+               worker_init_fn=worker_init_fn
+           ),
+           call(
+               mock_labeled_valid,
+               batch_size=mock_config.training.batch_size,
+               shuffle=False,
+               num_workers=mock_config.training.num_workers,
+               pin_memory=mock_config.training.pin_memory,
+               persistent_workers=mock_config.training.num_workers > 0,
+               prefetch_factor=mock_config.training.prefetch_factor if mock_config.training.num_workers > 0 else None,
+               worker_init_fn=worker_init_fn
+           )
+       ], any_order=False)
