@@ -616,13 +616,14 @@ def train_model(
                 history['metrics'] = history['metrics'][:start_epoch]
 
             logger.info(f"Resumed from epoch {start_epoch}")
-            logger.info(f"Best AUC from loaded checkpoint: {best_auc:.4f}")
+            # Reports the best F1-score found in the loaded checkpoint.
+            logger.info(f"Best F1-score from loaded checkpoint: {best_f1:.4f}")
         except Exception as e:
             # Handle errors during checkpoint loading.
             logger.error(f"Error loading checkpoint: {e}", exc_info=True)
             logger.info("Starting training from scratch")
             start_epoch = 0
-            best_auc = 0.0
+            best_f1 = 0.0
             history = {'train_loss': [], 'valid_loss': [], 'metrics': []}
 
 
