@@ -213,7 +213,7 @@ class TestTrainModel:
         self, mock_apply_transforms, mock_ctmetadata_dataset, mock_persistent_dataset,
         mock_cache_ds, mock_monai_dataset, mock_dataloader, mock_wandb_init,
         mock_load_data, mock_create_model, mock_train_epoch,
-        mock_validate_epoch, mock_save_checkpoint, # `mock_compute_metrics` is removed
+        mock_validate_epoch, mock_save_checkpoint,
         mock_generate_report, mock_label_attacher, mock_get_transforms,
         mock_config, use_cache
     ):
@@ -237,7 +237,6 @@ class TestTrainModel:
 
         mock_validate_epoch.return_value = (0.4, {'roc_auc_macro': 0.85, 'f1_macro': 0.75})
 
-        # The mocked transform function must return a serializable object.
         from monai.transforms import Compose
         mock_get_transforms.return_value = Compose([])
 
@@ -268,7 +267,6 @@ class TestTrainModel:
         mock_load_data.assert_called_once_with(mock_config)
         mock_get_transforms.assert_called_once_with(mock_config)
 
-        # Assert that CTMetadataDataset is called WITHOUT pathology_columns
         mock_ctmetadata_dataset.assert_has_calls([
             call(dataframe=ANY, img_dir=mock_config.paths.img_dir, path_mode=ANY),
             call(dataframe=ANY, img_dir=mock_config.paths.img_dir, path_mode=ANY)
@@ -285,10 +283,15 @@ class TestTrainModel:
                 call(image_source=mock_preprocessed_valid, labels_df=ANY, pathology_columns=ANY)
             ])
 
-        # Assert DataLoaders get the correct final datasets with the correct arguments
+        # Assert that augmentations are applied only to the training dataset
+        mock_apply_transforms.assert_called_once_with(
+            data=mock_labeled_train, transform=ANY
+        )
+
+        # Assert DataLoaders get the correct final datasets
         mock_dataloader.assert_has_calls([
            call(
-               mock_labeled_train, 
+               mock_augmented_train, # Check that the augmented dataset is used
                batch_size=mock_config.training.batch_size,
                shuffle=True,
                num_workers=mock_config.training.num_workers,
@@ -298,7 +301,7 @@ class TestTrainModel:
                worker_init_fn=worker_init_fn
            ),
            call(
-               mock_labeled_valid,
+               mock_labeled_valid, # Validation set should not be augmented
                batch_size=mock_config.training.batch_size,
                shuffle=False,
                num_workers=mock_config.training.num_workers,

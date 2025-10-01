@@ -177,15 +177,14 @@ def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.Dat
 def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
                 optimizer: torch.optim.Optimizer, scaler: torch.cuda.amp.GradScaler,
                 device: torch.device, epoch: int, total_epochs: int,
-                augment_transforms: Optional[Callable], 
                 gradient_accumulation_steps: int = 1, use_amp: bool = False,
                 use_bf16: bool = False) -> float:
     """
     Trains the model for one epoch.
 
     Handles forward pass, loss calculation, backward pass, optimizer step,
-    and logging of training progress. Supports gradient accumulation,
-    Automatic Mixed Precision (AMP), and on-the-fly GPU augmentations.
+    and logging of training progress. Supports gradient accumulation and
+    Automatic Mixed Precision (AMP).
 
     Args:
         model: The PyTorch model to train.
@@ -196,8 +195,6 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         device: The device to train on (e.g., 'cuda', 'cpu').
         epoch: The current epoch number (0-indexed).
         total_epochs: The total number of epochs for training.
-        augment_transforms: A callable pipeline of MONAI transforms to be applied
-                            to the batch on the GPU. If None, no augmentations are applied.
         gradient_accumulation_steps: Number of steps to accumulate gradients.
         use_amp: Boolean indicating whether to use Automatic Mixed Precision.
         use_bf16: Boolean indicating whether to use bfloat16 for mixed precision.
@@ -221,25 +218,6 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         # Move data to the specified device.
         pixel_values = batch["image"].to(device, non_blocking=True)
         labels = batch["label"].to(device, non_blocking=True)
-
-        # Apply augmentations on the GPU by iterating through the batch.
-        if augment_transforms:
-            augmented_images = []
-            # We iterate through the batch dimension
-            for i in range(pixel_values.shape[0]):
-                # Create a dictionary for a single sample, including the label.
-                # The transforms that don't use the 'label' key will ignore it.
-                sample = {"image": pixel_values[i], "label": labels[i]}
-                
-                # Apply the entire augmentation pipeline to the single sample.
-                augmented_sample = augment_transforms(sample)
-                
-                # Collect the augmented image. The label is not needed from here
-                # as it is not modified and we already have the `labels` tensor.
-                augmented_images.append(augmented_sample["image"])
-            
-            # Reconstruct the batch from the list of augmented images.
-            pixel_values = torch.stack(augmented_images)
 
         if use_amp and scaler is not None:
             # Determine the dtype for mixed precision.
@@ -465,7 +443,6 @@ def train_model(
     # Define the preprocessing and augmentation transform pipelines.
     preprocess_transforms = get_preprocessing_transforms(config)
     
-    # Augmentation transforms are defined separately as they are applied after caching.
     # The augmentations will be passed to the training loop directly.
     augment_transforms = None
     if config.training.augment:
@@ -479,7 +456,6 @@ def train_model(
                 translate_range=((-20, 20), (-20, 20), (0, 0)),
                 mode="bilinear",
                 padding_mode="zeros",
-                device=device  # Use the main training device
             ),
             RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.01),
             RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5),
@@ -506,8 +482,11 @@ def train_model(
             train_image_source = CacheDataset(data=train_image_source, cache_rate=config.cache.memory_rate, num_workers=config.training.num_workers)
 
         # 5. Attach labels to the cached images on-the-fly.
-        train_labeled_ds = LabelAttacherDataset(image_source=train_image_source, labels_df=train_df, pathology_columns=config.pathologies.columns)
-        train_dataset = train_labeled_ds
+        train_dataset = LabelAttacherDataset(image_source=train_image_source, labels_df=train_df, pathology_columns=config.pathologies.columns)
+        
+        # 6. Apply augmentations after labeling.
+        if augment_transforms:
+            train_dataset = ApplyTransforms(data=train_dataset, transform=augment_transforms)
 
         # --- Validation Data Pipeline (same logic, no augmentation) ---
         base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
@@ -524,8 +503,10 @@ def train_model(
         # --- Training Data Pipeline (No Caching) ---
         base_train_ds = CTMetadataDataset(dataframe=train_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
         train_preprocessed_ds = Dataset(data=base_train_ds, transform=preprocess_transforms)
-        train_labeled_ds = LabelAttacherDataset(image_source=train_preprocessed_ds, labels_df=train_df, pathology_columns=config.pathologies.columns)
-        train_dataset = train_labeled_ds
+        train_dataset = LabelAttacherDataset(image_source=train_preprocessed_ds, labels_df=train_df, pathology_columns=config.pathologies.columns)
+        
+        if augment_transforms:
+            train_dataset = ApplyTransforms(data=train_dataset, transform=augment_transforms)
 
         # --- Validation Data Pipeline (No Caching) ---
         base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
@@ -651,7 +632,6 @@ def train_model(
         train_loss = train_epoch(
             model, train_loader, criterion, optimizer, scaler, device,
             epoch, config.training.num_epochs,
-            augment_transforms=augment_transforms,
             gradient_accumulation_steps=config.training.gradient_accumulation_steps,
             use_amp=config.optimization.mixed_precision,
             use_bf16=config.optimization.use_bf16

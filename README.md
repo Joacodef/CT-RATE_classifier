@@ -1,6 +1,6 @@
 # 3D CT Scan Pathology Classifier
 
-This project provides a system for classifying pathologies in 3D CT (Computed Tomography) scans using PyTorch and MONAI. It supports architectures like 3D ResNet, 3D DenseNet, and 3D Vision Transformers (ViT).
+This project provides a system for classifying pathologies in 3D CT (Computed Tomography) scans using self-contained PyTorch implementations of 3D ResNet, 3D DenseNet, and 3D Vision Transformers (ViT), with preprocessing support from MONAI.
 
 ## Core Workflow
 
@@ -59,9 +59,9 @@ The recommended workflow for using this repository is as follows:
     python -m venv venv
     source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
     ```
-3.  **Install dependencies:** First, install the correct PyTorch version for your CUDA setup. For CUDA 11.8:
+3.  **Install dependencies:** First, install the correct PyTorch version for your CUDA setup.
     ```bash
-    pip install torch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 --index-url https://download.pytorch.org/whl/cu118
+    pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
     ```
     Then, install the remaining packages:
     ```bash
@@ -127,12 +127,12 @@ The `train.py` script orchestrates the training process.
 
 ### Data Pipeline during Training
 
-For each item, the training data pipeline executes the following steps:
+The training data pipeline is designed for efficiency, separating preprocessing from on-the-fly augmentations.
 
 1.  **`CTMetadataDataset`**: Reads a data split CSV and retrieves the file path for the corresponding CT volume.
-2.  **`monai.PersistentDataset` (Disk Cache)**: Receives the file path, applies the preprocessing transforms, and saves the resulting tensor to the disk cache. On subsequent epochs, it loads the tensor directly from the cache.
-3.  **`LabelAttacherDataset`**: Attaches pathology labels to the processed image tensor from the cache.
-4.  **`ApplyTransforms` (Augmentations)**: If enabled, applies on-the-fly augmentations like random flips and rotations.
+2.  **`monai.PersistentDataset` (Disk Cache)**: Receives the file path from the previous step. On the first epoch, it applies the preprocessing transforms (resampling, resizing, normalizing) and saves the resulting tensor to the disk cache. On subsequent epochs, it loads the tensor directly from the cache, skipping the expensive preprocessing steps.
+3.  **`LabelAttacherDataset`**: Attaches the correct pathology labels to the processed image tensor retrieved from the cache.
+4.  **On-the-Fly GPU Augmentations**: If enabled, data augmentations (e.g., random flips, rotations) are applied to the batch on the GPU within the training loop. This ensures maximum efficiency by processing augmentations in parallel on the accelerator.
 
 ### Running Training
 

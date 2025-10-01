@@ -4,8 +4,8 @@ This directory contains general-purpose utility functions that provide support a
 
 ## Core Components
 
-1.  [**`logging_config.py`**](https://www.google.com/search?q=%23logging_configpy): A module to standardize logging configuration.
-2.  [**`torch_utils.py`**](https://www.google.com/search?q=%23torch_utilspy): A module to configure PyTorch for performance.
+1.  `logging_config.py`: A module to standardize logging configuration.
+2.  `torch_utils.py`: A module to configure PyTorch for performance.
 
 -----
 

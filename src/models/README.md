@@ -1,24 +1,24 @@
 # Models Module (`/src/models`)
 
-This directory contains the neural network architectures for the 3D CT scan classification task. The models are adapted for 3D volumetric data and are built as wrappers around the standardized implementations provided by the `monai` library.
+This directory contains the neural network architectures for the 3D CT scan classification task. The models are self-contained, adapted for 3D volumetric data, and built directly on PyTorch, enabling features like gradient checkpointing for memory efficiency.
 
 ## Core Components
 
-The module is organized into files based on the model architecture. Each file provides a consistent interface for creating models while leveraging the robust `monai` backends.
+The module is organized into files based on the model architecture. Each file provides a consistent interface for creating models.
 
-1.  [**`resnet3d.py`**](https://www.google.com/search?q=%5Bhttps://www.google.com/search%3Fq%3D%2523resnet3dpy%5D\(https://www.google.com/search%3Fq%3D%2523resnet3dpy\)): A 3D adaptation of the ResNet architecture.
-2.  [**`densenet3d.py`**](https://www.google.com/search?q=%5Bhttps://www.google.com/search%3Fq%3D%2523densenet3dpy%5D\(https://www.google.com/search%3Fq%3D%2523densenet3dpy\)): A 3D adaptation of the DenseNet architecture.
-3.  [**`vit3d.py`**](https://www.google.com/search?q=%5Bhttps://www.google.com/search%3Fq%3D%2523vit3dpy%5D\(https://www.google.com/search%3Fq%3D%2523vit3dpy\)): A 3D adaptation of the Vision Transformer (ViT) architecture.
+1.  `resnet3d.py`: A self-contained 3D adaptation of the ResNet architecture.
+2.  `densenet3d.py`: A self-contained 3D adaptation of the DenseNet architecture.
+3.  `vit3d.py`: A self-contained 3D adaptation of the Vision Transformer (ViT) architecture.
 
 -----
 
 ### `resnet3d.py`
 
-This file provides a 3D ResNet (Residual Network) by wrapping `monai.networks.nets.ResNet`. It is configured for single-channel volumetric inputs and includes a custom classification head to match the project's requirements.
+This file provides a 3D ResNet (Residual Network) implementation built from scratch for this project. It is configured for single-channel volumetric inputs and includes a custom classification head to match the project's requirements.
 
 **Key Features:**
 
-  * **`ResNet3D`**: The base class that wraps the MONAI ResNet model and attaches a custom classification head.
+  * **`ResNet3D`**: The main class for the 3D ResNet model, implemented with standard PyTorch modules.
 
 **Available Variants:**
 
@@ -29,11 +29,11 @@ This file provides a 3D ResNet (Residual Network) by wrapping `monai.networks.ne
 
 ### `densenet3d.py`
 
-This file provides a 3D implementation of the DenseNet (Densely Connected Convolutional Network) architecture by wrapping `monai.networks.nets.DenseNet`. The wrapper ensures the model can be used seamlessly within the existing training framework.
+This file provides a self-contained 3D implementation of the DenseNet (Densely Connected Convolutional Network) architecture. It is adapted for 3D from the official PyTorch 2D version and does not rely on external libraries for its core structure.
 
 **Key Features:**
 
-  * **`DenseNet3D`**: The main class for the 3D DenseNet model, which integrates MONAI's DenseNet backbone with a custom classification head.
+  * **`DenseNet3D`**: The main class for the 3D DenseNet model, implemented with standard PyTorch modules.
 
 **Available Variants:**
 
@@ -44,11 +44,11 @@ This file provides a 3D implementation of the DenseNet (Densely Connected Convol
 
 ### `vit3d.py`
 
-This file implements a 3D Vision Transformer (ViT) by wrapping `monai.networks.nets.ViT`. It adapts the powerful transformer architecture for volumetric classification tasks.
+This file implements a 3D Vision Transformer (ViT) from scratch. It adapts the powerful transformer architecture for volumetric classification tasks and is not dependent on MONAI.
 
 **Key Features:**
 
-  * **`VisionTransformer3D`**: The main ViT model class, which combines the MONAI ViT backbone with a custom classification head suitable for this project.
+  * **`VisionTransformer3D`**: The main ViT model class, which includes all components like patch embedding, multi-head attention, and transformer blocks built with PyTorch.
 
 **Available Variants:**
 

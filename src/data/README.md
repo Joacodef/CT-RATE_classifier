@@ -8,10 +8,10 @@ The core principle is a two-stage caching pipeline (disk and RAM) managed by MON
 
 The data module consists of four key files:
 
-1.  [**`dataset.py`**](https://www.google.com/search?q=%23datasetpy): Defines the custom PyTorch `Dataset` classes that form the building blocks of the data pipeline.
-2.  [**`transforms.py`**](https://www.google.com/search?q=%23transformspy): Centralizes the MONAI transformation pipelines for consistent preprocessing.
-3.  [**`cache_utils.py`**](https://www.google.com/search?q=%23cache_utilspy): Contains the logic for the deterministic caching system, including hashing and directory management.
-4.  [**`utils.py`**](https://www.google.com/search?q=%23utilspy): Provides utility functions for data-related tasks, such as resolving file paths.
+1.  `dataset.py`: Defines the custom PyTorch `Dataset` classes that form the building blocks of the data pipeline.
+2.  `transforms.py`: Centralizes the MONAI transformation pipelines for consistent preprocessing.
+3.  `cache_utils.py`: Contains the logic for the deterministic caching system, including hashing and directory management.
+4.  `utils.py`: Provides utility functions for data-related tasks, such as resolving file paths.
 
 -----
 
@@ -60,10 +60,10 @@ The core principle is a two-stage caching pipeline (disk and RAM) managed by MON
 
 The data module consists of four key files:
 
-1.  [**`dataset.py`**](https://www.google.com/search?q=%23datasetpy): Defines the custom PyTorch `Dataset` classes that form the building blocks of the data pipeline.
-2.  [**`transforms.py`**](https://www.google.com/search?q=%23transformspy): Centralizes the MONAI transformation pipelines for consistent preprocessing.
-3.  [**`cache_utils.py`**](https://www.google.com/search?q=%23cache_utilspy): Contains the logic for the deterministic caching system, including hashing and directory management.
-4.  [**`utils.py`**](https://www.google.com/search?q=%23utilspy): Provides utility functions for data-related tasks, such as resolving file paths.
+1.  `dataset.py`: Defines the custom PyTorch `Dataset` classes that form the building blocks of the data pipeline.
+2.  `transforms.py`: Centralizes the MONAI transformation pipelines for consistent preprocessing.
+3.  `cache_utils.py`: Contains the logic for the deterministic caching system, including hashing and directory management.
+4.  `utils.py`: Provides utility functions for data-related tasks, such as resolving file paths.
 
 -----
 
