@@ -28,7 +28,9 @@ from monai.transforms import (
     RandGaussianNoised,
     RandShiftIntensityd,
     EnsureTyped,
-    RandAffined
+    RandAffined,
+    RandGaussianSmoothd,
+    RandAdjustContrastd,
 )
 from monai.losses import FocalLoss
 from monai.metrics import ROCAUCMetric, FBetaScore
@@ -448,17 +450,20 @@ def train_model(
     if config.training.augment:
         logger.info("On-the-fly GPU augmentations are enabled.")
         augment_transforms = Compose([
+            RandFlipd(keys=["image"], prob=0.5, spatial_axis=2), # Flip along the L-R axis
             RandAffined(
                 keys="image",
-                prob=0.1,
-                rotate_range=(np.pi / 12, np.pi / 12, np.pi / 12),
-                scale_range=((0.85, 1.15), (0.85, 1.15), (0.85, 1.15)),
-                translate_range=((-20, 20), (-20, 20), (0, 0)),
+                prob=0.15,
+                rotate_range=(np.pi / 36, np.pi / 36, np.pi / 12), # Reduced rotation
+                scale_range=((0.9, 1.1), (0.9, 1.1), (0.9, 1.1)),
+                translate_range=((-10, 10), (-10, 10), (0, 0)),
                 mode="bilinear",
                 padding_mode="zeros",
             ),
+            RandGaussianSmoothd(keys=["image"], prob=0.15, sigma_x=(0.5, 1.0), sigma_y=(0.5, 1.0), sigma_z=(0.5, 1.0)),
+            RandAdjustContrastd(keys=["image"], prob=0.15, gamma=(0.7, 1.5)),
             RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.01),
-            RandShiftIntensityd(keys="image", offsets=0.1, prob=0.5),
+            RandShiftIntensityd(keys="image", offsets=0.1, prob=0.1),
             # Final type check after all transforms.
             EnsureTyped(keys=["image", "label"], dtype=config.torch_dtype)
         ])
