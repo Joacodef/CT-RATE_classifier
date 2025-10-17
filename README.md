@@ -81,9 +81,15 @@ The project is controlled by two types of files:
 
 Scripts in `scripts/data_preparation/` are used to prepare the dataset.
 
-  * **`create_filtered_dataset.py`**: Generates a master list of volumes by applying patient-level exclusion rules from multiple source files to prevent data leakage.
-  * **`verify_and_download.py`**: Checks for missing NIfTI files locally and downloads them from the specified Hugging Face repository.
-  * **`create_kfold_splits.py`**: Creates k-fold splits using grouped, stratified sampling. It groups scans by patient to prevent data leakage and stratifies by pathology to ensure balanced folds.
+> **Important Note on Data Handling:** This repository does not use the original train/validation splits provided with the CT-RATE dataset. Instead, it generates a custom, filtered master list of volumes. This is done to:
+> 1.  **Separate Manually Labeled Scans**: A subset of scans with manual "gold standard" labels are excluded from the main training corpus to be used for high-quality, independent evaluation.
+> 2.  **Clean the Dataset**: Known problematic scans (e.g., brain scans, scans with missing z-space) are removed to improve model robustness.
+>
+> This approach was chosen for the purposes of the experiments of this repo, though it means results may not be directly comparable to models trained on the original, unfiltered data splits.
+
+* **`create_filtered_dataset.py`**: Generates a master list of volumes by applying patient-level exclusion rules from multiple source files to prevent data leakage.
+* **`verify_and_download.py`**: Checks for missing NIfTI files locally and downloads them from the specified Hugging Face repository.
+* **`create_kfold_splits.py`**: Creates k-fold splits using grouped, stratified sampling from the filtered master list. It groups scans by patient to prevent data leakage and stratifies by pathology to ensure balanced folds.
 
 **Example Workflow:**
 

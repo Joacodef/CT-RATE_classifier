@@ -135,7 +135,7 @@ def create_kfold_splits(config, n_splits: int, output_dir: Path):
             f"Saved to {train_path.name}, {valid_path.name}"
         )
 
-logger.info("K-fold split creation complete.")
+    logger.info("K-fold split creation complete.")
 
 
 def main():

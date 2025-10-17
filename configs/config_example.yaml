@@ -40,7 +40,7 @@ paths:
 
   # Paths to files that contain volumes to be excluded from the dataset
   exclusion_files:
-    manual_labels: "all_manual_labels.csv"
+    manual_labels: "manual_labels.csv"
     brain_scans: "brain_scans.txt" 
     missing_z: "missing_z_space.txt" 
   
