@@ -2,6 +2,17 @@
 
 This directory contains the scripts required to process the raw dataset into a structured and filtered set of files suitable for the caching and training stages. The scripts handle operations from initial filtering to the creation of cross-validation splits.
 
+## Data Handling Philosophy
+
+**It is critical to note that this project does not use the original train/validation splits provided with the CT-RATE dataset.** Instead, a custom data filtering and preparation workflow is enforced by the scripts in this directory.
+
+The core motivation is to create a robust and reliable dataset by:
+
+1.  **Excluding Problematic Scans**: The `create_filtered_dataset.py` script removes scans that are known to be problematic, such as brain scans or those with missing metadata, which are not suitable for a chest CT classifier.
+2.  **Separating a Gold Standard Test Set**: A set of scans with high-quality, manual labels are treated as a "gold standard" evaluation set. These are also removed from the main training corpus to ensure that the model is evaluated on data that has not been seen in any form during training.
+
+This process results in a `filtered_master_list.csv`, which serves as the definitive source for all subsequent steps, such as creating custom cross-validation folds. While this methodology enhances the reliability of the experimental results, it means that performance metrics may not be directly comparable to other works that use the original, unfiltered dataset.
+
 ## Recommended Order of Operations
 
 The following sequence is recommended for initial project setup:

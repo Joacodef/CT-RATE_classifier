@@ -57,8 +57,22 @@ def natural_sort_key(s: str):
 
 def create_filtered_dataset(config):
     """
-    Generates a filtered list of volumes by excluding all scans from any patient
-    who appears in the exclusion lists, preventing data leakage.
+    Generates a definitive master list of volumes for the project.
+
+    This function creates a clean dataset by applying patient-level filtering.
+    It identifies all patients who appear in any of the exclusion lists
+    (e.g., manually labeled scans, brain scans, scans with missing z-space)
+    and removes all scans belonging to those patients from the final list.
+
+    This approach serves two primary purposes:
+    1.  It separates a high-quality, manually labeled "gold standard" set
+        for reliable evaluation.
+    2.  It cleans the main dataset by removing known problematic scans.
+    3.  It prevents data leakage by ensuring no patient's data is split
+        across training and validation/test sets.
+
+    The final, filtered list is saved as a CSV file, which serves as the
+    basis for all subsequent data preparation steps, like creating k-fold splits.
     """
     logger.info("Starting dataset filtering process...")
 
