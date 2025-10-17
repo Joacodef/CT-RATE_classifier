@@ -121,16 +121,24 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
     split_output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Saving features to: {split_output_dir}")
 
-    for batch in tqdm(data_loader, desc=f"Generating features for '{split}' split"):
+    batch_size = config.training.batch_size
+    for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Generating features for '{split}' split")):
         images = batch["image"].to(device)
-        volume_names = batch["volume_name"]
+        
+        # Retrieve volume names from the original dataframe using the batch index,
+        # as the unshuffled DataLoader guarantees sequential order.
+        start_idx = batch_idx * batch_size
+        end_idx = start_idx + len(images)
+        volume_names = df_volumes.iloc[start_idx:end_idx]['VolumeName'].tolist()
 
         features = model(images)
         features = features.cpu()
 
         for i, volume_name in enumerate(volume_names):
             feature_vector = features[i]
-            output_path = split_output_dir / f"{volume_name}.pt"
+            # Ensure the volume name is clean for the filename
+            clean_volume_name = volume_name.replace(".nii.gz", "").replace(".nii", "")
+            output_path = split_output_dir / f"{clean_volume_name}.pt"
             torch.save(feature_vector, output_path)
 
     logger.info("Feature generation complete.")

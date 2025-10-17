@@ -11,7 +11,7 @@ import nibabel as nib
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 
-from src.data.dataset import CTMetadataDataset, LabelAttacherDataset, ApplyTransforms
+from src.data.dataset import CTMetadataDataset, LabelAttacherDataset, ApplyTransforms, FeatureDataset
 from src.data.utils import get_dynamic_image_path
 
 
@@ -176,3 +176,60 @@ class TestApplyTransforms:
         mock_base_dataset.__getitem__.assert_called_once_with(0)
         mock_transform.assert_called_once_with(base_item)
         assert result == transformed_item
+
+
+
+class TestFeatureDataset:
+    """Tests for the FeatureDataset class."""
+
+    @pytest.fixture
+    def mock_feature_data(self, tmp_path: Path, mock_dataframe: pd.DataFrame, pathology_columns: list[str]):
+        """Creates a mock environment for testing the FeatureDataset."""
+        feature_dir = tmp_path / "features"
+        feature_dir.mkdir()
+        
+        # Create mock feature tensor files
+        feature_dim = 256  # Example feature dimension
+        for i, row in mock_dataframe.iterrows():
+            volume_name = row['VolumeName']
+            feature_tensor = torch.randn(feature_dim)
+            torch.save(feature_tensor, feature_dir / f"{volume_name}.pt")
+            
+        return {
+            "feature_dir": feature_dir,
+            "dataframe": mock_dataframe,
+            "pathology_columns": pathology_columns,
+            "feature_dim": feature_dim
+        }
+
+    def test_getitem_loads_features_and_labels(self, mock_feature_data):
+        """
+        Tests that the FeatureDataset correctly loads a pre-computed feature
+        tensor and its corresponding label.
+        """
+        # 1. Arrange
+        dataset = FeatureDataset(
+            dataframe=mock_feature_data["dataframe"],
+            feature_dir=mock_feature_data["feature_dir"],
+            pathology_columns=mock_feature_data["pathology_columns"]
+        )
+        
+        # 2. Act
+        item = dataset[0]
+
+        # 3. Assert
+        assert isinstance(item, dict)
+        assert "image" in item
+        assert "label" in item
+        assert "volume_name" in item
+
+        # Assert that the 'image' is the loaded feature tensor
+        assert isinstance(item["image"], torch.Tensor)
+        assert item["image"].shape == (mock_feature_data["feature_dim"],)
+        
+        # Assert that the label is correct
+        expected_label = torch.tensor([1, 0], dtype=torch.float32)
+        assert torch.equal(item["label"], expected_label)
+        
+        # Assert that the volume name is correct
+        assert item["volume_name"] == mock_feature_data["dataframe"].iloc[0]['VolumeName']
