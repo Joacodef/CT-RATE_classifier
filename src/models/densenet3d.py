@@ -117,9 +117,8 @@ class DenseNet3D(nn.Module):
         self.features.add_module('norm5', nn.BatchNorm3d(num_features))
 
         # --- Classification Head ---
+        self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
         self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool3d((1, 1, 1)),
-            nn.Flatten(),
             nn.Dropout(0.5),
             nn.Linear(num_features, 512),
             nn.ReLU(inplace=True),
@@ -140,15 +139,17 @@ class DenseNet3D(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Extract features using the backbone.
         if self.use_checkpointing and self.training:
-            # Use checkpoint_sequential for efficient gradient checkpointing.
-            # We checkpoint each component of the features sequence (conv, norm, block, transition, etc.)
             segments = len(self.features)
             features_out = checkpoint_sequential(self.features, segments, x)
         else:
             features_out = self.features(x)
 
-        # Final activation and classification
+        # Final activation, pooling, and flattening
         out = F.relu(features_out, inplace=True)
+        out = self.avgpool(out)
+        out = torch.flatten(out, 1)
+
+        # Pass through the classifier
         out = self.classifier(out)
         return out
 

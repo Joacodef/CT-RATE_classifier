@@ -168,3 +168,62 @@ class LabelAttacherDataset(Dataset):
         data_dict['volume_name'] = label_row['VolumeName']
 
         return data_dict
+    
+
+class FeatureDataset(Dataset):
+    """
+    A PyTorch Dataset for loading pre-computed feature vectors and their labels.
+
+    This dataset is designed for the second stage of a feature-based workflow.
+    It loads feature tensors that have been previously generated and saved to disk,
+    and pairs them with their corresponding pathology labels.
+    """
+    def __init__(self, dataframe: pd.DataFrame, feature_dir: Path, pathology_columns: List[str]):
+        """
+        Initializes the FeatureDataset.
+
+        Args:
+            dataframe (pd.DataFrame): DataFrame containing 'VolumeName' and label columns.
+            feature_dir (Path): The root directory where feature vectors are stored.
+            pathology_columns (List[str]): The names of the label columns in the DataFrame.
+        """
+        self.dataframe = dataframe
+        self.feature_dir = Path(feature_dir)
+        self.pathology_columns = pathology_columns
+
+    def __len__(self) -> int:
+        """Returns the total number of samples in the dataset."""
+        return len(self.dataframe)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Retrieves a feature vector and its corresponding label for a single sample.
+
+        Args:
+            idx (int): The index of the sample to retrieve.
+
+        Returns:
+            A dictionary containing:
+            - 'image' (torch.Tensor): The pre-computed feature vector. The key is
+              kept as 'image' for compatibility with the existing training pipeline.
+            - 'label' (torch.Tensor): The multi-label pathology vector.
+            - 'volume_name' (str): The name of the volume file.
+        """
+        row = self.dataframe.iloc[idx]
+        volume_name = row['VolumeName']
+
+        # Construct the path to the feature file and load the tensor
+        feature_path = self.feature_dir / f"{volume_name}.pt"
+        feature_vector = torch.load(feature_path)
+
+        # Get the corresponding labels
+        labels = torch.tensor(
+            row[self.pathology_columns].values.astype(float),
+            dtype=torch.float32
+        )
+
+        return {
+            "image": feature_vector,
+            "label": labels,
+            "volume_name": volume_name
+        }

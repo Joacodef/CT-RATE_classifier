@@ -61,6 +61,22 @@ model:
     depth: 12
     num_heads: 6
 
+# --- Workflow Configuration ---
+# Defines the overall training methodology.
+workflow:
+  # Options: "end-to-end", "feature-based"
+  # "end-to-end": Trains the model directly on image data.
+  # "feature-based": A two-stage process. First, generate features with a pre-trained
+  #                  model, then train a smaller classifier on those features.
+  mode: "end-to-end"
+
+  # Settings for the feature-based workflow (only used if mode is "feature-based")
+  feature_config:
+    # Path to the pre-trained model checkpoint used for feature extraction.
+    feature_extractor_path: null # e.g., "output/pretrained_model/best_model.pth"
+    # Directory where feature vectors are stored and loaded from.
+    feature_dir: "output/features"
+    
 # --- Loss Function Configuration ---
 loss_function:
   type: "FocalLoss"  # Options: "BCEWithLogitsLoss", "FocalLoss"

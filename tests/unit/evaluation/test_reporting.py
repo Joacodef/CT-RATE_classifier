@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, call
+import matplotlib
+matplotlib.use('Agg')
 
 import pytest
 import pandas as pd

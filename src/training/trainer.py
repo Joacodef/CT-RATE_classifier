@@ -43,7 +43,7 @@ from src.models.densenet3d import densenet121_3d, densenet169_3d, densenet201_3d
 from src.models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d
 
 # Internal imports - data
-from src.data.dataset import CTMetadataDataset, ApplyTransforms, LabelAttacherDataset
+from src.data.dataset import CTMetadataDataset, ApplyTransforms, LabelAttacherDataset, FeatureDataset
 from src.data.transforms import get_preprocessing_transforms
 
 # Internal imports - training utilities
@@ -116,6 +116,48 @@ def create_model(config: SimpleNamespace) -> nn.Module:
 
     return model
 
+def create_mlp_classifier(config: SimpleNamespace) -> nn.Module:
+    """
+    Creates a simple MLP classifier for training on pre-computed features.
+
+    Args:
+        config: The configuration object.
+
+    Returns:
+        A PyTorch MLP model.
+    """
+    # Dynamically determine the input feature size by loading one sample
+    try:
+        feature_dir = Path(config.workflow.feature_config.feature_dir) / "train"
+        # Find the first .pt file in the directory
+        sample_feature_file = next(feature_dir.glob("*.pt"))
+        sample_feature = torch.load(sample_feature_file)
+        in_features = sample_feature.shape[0]
+        logger.info(f"Determined input feature dimension from sample: {in_features}")
+    except (StopIteration, FileNotFoundError):
+        raise FileNotFoundError(
+            f"No feature files found in {feature_dir}. "
+            "Please run the feature generation script first."
+        )
+
+    num_classes = len(config.pathologies.columns)
+
+    model = nn.Sequential(
+        nn.Linear(in_features, 512),
+        nn.ReLU(inplace=True),
+        nn.Dropout(0.5),
+        nn.Linear(512, 256),
+        nn.ReLU(inplace=True),
+        nn.Dropout(0.3),
+        nn.Linear(256, num_classes)
+    )
+    logger.info(f"Created MLP classifier with input dim {in_features} and output dim {num_classes}")
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
+
+    return model
 
 def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load and prepare training and validation dataframes from unified sources.
@@ -442,83 +484,108 @@ def train_model(
     # Load and prepare data.
     train_df, valid_df = load_and_prepare_data(config)
 
-    # Define the preprocessing and augmentation transform pipelines.
-    preprocess_transforms = get_preprocessing_transforms(config)
-    
-    # The augmentations will be passed to the training loop directly.
-    augment_transforms = None
-    if config.training.augment:
-        logger.info("On-the-fly GPU augmentations are enabled.")
-        augment_transforms = Compose([
-            RandFlipd(keys=["image"], prob=0.5, spatial_axis=2), # Flip along the L-R axis
-            RandAffined(
-                keys="image",
-                prob=0.15,
-                rotate_range=(np.pi / 36, np.pi / 36, np.pi / 12), # Reduced rotation
-                scale_range=((0.9, 1.1), (0.9, 1.1), (0.9, 1.1)),
-                translate_range=((-10, 10), (-10, 10), (0, 0)),
-                mode="bilinear",
-                padding_mode="zeros",
-            ),
-            RandGaussianSmoothd(keys=["image"], prob=0.15, sigma_x=(0.5, 1.0), sigma_y=(0.5, 1.0), sigma_z=(0.5, 1.0)),
-            RandAdjustContrastd(keys=["image"], prob=0.15, gamma=(0.7, 1.5)),
-            RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.01),
-            RandShiftIntensityd(keys="image", offsets=0.1, prob=0.1),
-            # Final type check after all transforms.
-            EnsureTyped(keys=["image", "label"], dtype=config.torch_dtype)
-        ])
+    # Determine the training workflow
+    workflow_mode = getattr(config, 'workflow', SimpleNamespace(mode='end-to-end')).mode
+    logger.info(f"Starting training in '{workflow_mode}' mode.")
 
-    if config.cache.use_cache:
-        logger.info("Persistent caching is enabled.")
-        
-        # --- Training Data Pipeline ---
-        # 1. Label-agnostic dataset to find image paths.
-        base_train_ds = CTMetadataDataset(dataframe=train_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
-        
-        # 2. Define cache directory based on the preprocessing transforms.
-        train_cache_dir = get_or_create_cache_subdirectory(config.paths.cache_dir, preprocess_transforms, split="train")
-        
-        # 3. Persistent disk cache for preprocessed images (no labels).
-        train_image_source = PersistentDataset(data=base_train_ds, transform=preprocess_transforms, cache_dir=train_cache_dir, hash_func=deterministic_hash)
-        
-        # 4. In-memory cache for faster access.
-        if config.cache.memory_rate > 0:
-            logger.info(f"Using {config.cache.memory_rate * 100:.0f}% in-memory cache for training.")
-            train_image_source = CacheDataset(data=train_image_source, cache_rate=config.cache.memory_rate, num_workers=config.training.num_workers)
+    if workflow_mode == 'feature-based':
+        # --- Feature-Based Workflow ---
+        logger.info("Setting up feature-based data pipeline.")
+        feature_dir = Path(config.workflow.feature_config.feature_dir)
 
-        # 5. Attach labels to the cached images on-the-fly.
-        train_dataset = LabelAttacherDataset(image_source=train_image_source, labels_df=train_df, pathology_columns=config.pathologies.columns)
-        
-        # 6. Apply augmentations after labeling.
-        if augment_transforms:
-            train_dataset = ApplyTransforms(data=train_dataset, transform=augment_transforms)
+        train_dataset = FeatureDataset(
+            dataframe=train_df,
+            feature_dir=feature_dir / "train",
+            pathology_columns=config.pathologies.columns
+        )
+        valid_dataset = FeatureDataset(
+            dataframe=valid_df,
+            feature_dir=feature_dir / "valid",
+            pathology_columns=config.pathologies.columns
+        )
 
-        # --- Validation Data Pipeline (same logic, no augmentation) ---
-        base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
-        valid_cache_dir = get_or_create_cache_subdirectory(config.paths.cache_dir, preprocess_transforms, split="valid")
-        valid_image_source = PersistentDataset(data=base_valid_ds, transform=preprocess_transforms, cache_dir=valid_cache_dir, hash_func=deterministic_hash)
-        if config.cache.memory_rate > 0:
-            logger.info(f"Using {config.cache.memory_rate * 100:.0f}% in-memory cache for validation.")
-            valid_image_source = CacheDataset(data=valid_image_source, cache_rate=config.cache.memory_rate, num_workers=config.training.num_workers)
-        valid_dataset = LabelAttacherDataset(image_source=valid_image_source, labels_df=valid_df, pathology_columns=config.pathologies.columns)
-
+        # In this mode, augmentations are not applicable as we are using static features.
+        augment_transforms = None
     else:
-        logger.info("Caching is disabled. All transforms will be applied on-the-fly.")
-        
-        # --- Training Data Pipeline (No Caching) ---
-        base_train_ds = CTMetadataDataset(dataframe=train_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
-        train_preprocessed_ds = Dataset(data=base_train_ds, transform=preprocess_transforms)
-        train_dataset = LabelAttacherDataset(image_source=train_preprocessed_ds, labels_df=train_df, pathology_columns=config.pathologies.columns)
-        
-        if augment_transforms:
-            train_dataset = ApplyTransforms(data=train_dataset, transform=augment_transforms)
+        # --- End-to-End (Image-Based) Workflow ---
 
-        # --- Validation Data Pipeline (No Caching) ---
-        base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
-        valid_preprocessed_ds = Dataset(data=base_valid_ds, transform=preprocess_transforms)
-        valid_dataset = LabelAttacherDataset(image_source=valid_preprocessed_ds, labels_df=valid_df, pathology_columns=config.pathologies.columns)
-    
+        # Define the preprocessing and augmentation transform pipelines.
+        preprocess_transforms = get_preprocessing_transforms(config)
+        
+        # The augmentations will be passed to the training loop directly.
+        augment_transforms = None
+        if config.training.augment:
+            logger.info("On-the-fly GPU augmentations are enabled.")
+            augment_transforms = Compose([
+                RandFlipd(keys=["image"], prob=0.5, spatial_axis=2), # Flip along the L-R axis
+                RandAffined(
+                    keys="image",
+                    prob=0.15,
+                    rotate_range=(np.pi / 36, np.pi / 36, np.pi / 12), # Reduced rotation
+                    scale_range=((0.9, 1.1), (0.9, 1.1), (0.9, 1.1)),
+                    translate_range=((-10, 10), (-10, 10), (0, 0)),
+                    mode="bilinear",
+                    padding_mode="zeros",
+                ),
+                RandGaussianSmoothd(keys=["image"], prob=0.15, sigma_x=(0.5, 1.0), sigma_y=(0.5, 1.0), sigma_z=(0.5, 1.0)),
+                RandAdjustContrastd(keys=["image"], prob=0.15, gamma=(0.7, 1.5)),
+                RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.01),
+                RandShiftIntensityd(keys="image", offsets=0.1, prob=0.1),
+                # Final type check after all transforms.
+                EnsureTyped(keys=["image", "label"], dtype=config.torch_dtype)
+            ])
 
+            
+
+        if config.cache.use_cache:
+            logger.info("Persistent caching is enabled.")
+            
+            # --- Training Data Pipeline ---
+            # 1. Label-agnostic dataset to find image paths.
+            base_train_ds = CTMetadataDataset(dataframe=train_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
+            
+            # 2. Define cache directory based on the preprocessing transforms.
+            train_cache_dir = get_or_create_cache_subdirectory(config.paths.cache_dir, preprocess_transforms, split="train")
+            
+            # 3. Persistent disk cache for preprocessed images (no labels).
+            train_image_source = PersistentDataset(data=base_train_ds, transform=preprocess_transforms, cache_dir=train_cache_dir, hash_func=deterministic_hash)
+            
+            # 4. In-memory cache for faster access.
+            if config.cache.memory_rate > 0:
+                logger.info(f"Using {config.cache.memory_rate * 100:.0f}% in-memory cache for training.")
+                train_image_source = CacheDataset(data=train_image_source, cache_rate=config.cache.memory_rate, num_workers=config.training.num_workers)
+
+            # 5. Attach labels to the cached images on-the-fly.
+            train_dataset = LabelAttacherDataset(image_source=train_image_source, labels_df=train_df, pathology_columns=config.pathologies.columns)
+            
+            # 6. Apply augmentations after labeling.
+            if augment_transforms:
+                train_dataset = ApplyTransforms(data=train_dataset, transform=augment_transforms)
+
+            # --- Validation Data Pipeline (same logic, no augmentation) ---
+            base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
+            valid_cache_dir = get_or_create_cache_subdirectory(config.paths.cache_dir, preprocess_transforms, split="valid")
+            valid_image_source = PersistentDataset(data=base_valid_ds, transform=preprocess_transforms, cache_dir=valid_cache_dir, hash_func=deterministic_hash)
+            if config.cache.memory_rate > 0:
+                logger.info(f"Using {config.cache.memory_rate * 100:.0f}% in-memory cache for validation.")
+                valid_image_source = CacheDataset(data=valid_image_source, cache_rate=config.cache.memory_rate, num_workers=config.training.num_workers)
+            valid_dataset = LabelAttacherDataset(image_source=valid_image_source, labels_df=valid_df, pathology_columns=config.pathologies.columns)
+
+        else:
+            logger.info("Caching is disabled. All transforms will be applied on-the-fly.")
+            
+            # --- Training Data Pipeline (No Caching) ---
+            base_train_ds = CTMetadataDataset(dataframe=train_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
+            train_preprocessed_ds = Dataset(data=base_train_ds, transform=preprocess_transforms)
+            train_dataset = LabelAttacherDataset(image_source=train_preprocessed_ds, labels_df=train_df, pathology_columns=config.pathologies.columns)
+            
+            if augment_transforms:
+                train_dataset = ApplyTransforms(data=train_dataset, transform=augment_transforms)
+
+            # --- Validation Data Pipeline (No Caching) ---
+            base_valid_ds = CTMetadataDataset(dataframe=valid_df, img_dir=config.paths.img_dir, path_mode=config.paths.dir_structure)
+            valid_preprocessed_ds = Dataset(data=base_valid_ds, transform=preprocess_transforms)
+            valid_dataset = LabelAttacherDataset(image_source=valid_preprocessed_ds, labels_df=valid_df, pathology_columns=config.pathologies.columns)
 
     train_loader = DataLoader(
         train_dataset, batch_size=config.training.batch_size, shuffle=True,
@@ -535,8 +602,11 @@ def train_model(
         worker_init_fn=worker_init_fn
     )
 
-    # Create model and move to device.
-    model = create_model(config).to(device)
+    if workflow_mode == 'feature-based':
+        model = create_mlp_classifier(config).to(device)
+    else: # end-to-end
+        model = create_model(config).to(device)
+        
 
     # Watch model with wandb if initialized.
     if wandb_run:
@@ -735,3 +805,6 @@ def train_model(
             logger.error(f"Error finishing wandb run: {e}")
 
     return model, history
+
+
+
