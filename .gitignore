@@ -5,6 +5,7 @@ __pycache__
 *.nii.gz
 *.ipynb
 *.wandb
+*.pdf
 
 wandb/
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 import torch.nn as nn
+import inspect
 from tqdm import tqdm
 
 # Add project root to Python path
@@ -19,6 +20,91 @@ from src.data.transforms import get_preprocessing_transforms
 from src.training.trainer import create_model
 from src.utils.logging_config import setup_logging
 from monai.data import DataLoader, Dataset
+import importlib
+from pathlib import Path
+from typing import Optional
+
+
+def load_ct_clip_model(checkpoint_path: str, ct_clip_repo_path: Optional[str] = None, device='cpu'):
+    # If repo path provided, ensure package is importable (pip install -e is preferred)
+    if ct_clip_repo_path:
+        sys.path.insert(0, str(Path(ct_clip_repo_path).resolve()))
+
+    # Try to import the package (CT_CLIP) or some known modules
+    module = None
+    for cand in ('CT_CLIP', 'ct_clip', 'CT_CLIP.model', 'CT_CLIP.models'):
+        try:
+            module = importlib.import_module(cand)
+            break
+        except Exception:
+            continue
+    if module is None:
+        raise RuntimeError('Could not import CT_CLIP package; ensure pip install -e or provide correct repo path')
+
+    # Try common factory names
+    factory = None
+    for name in ('build_model', 'create_model', 'get_model', 'load_model'):
+        if hasattr(module, name):
+            factory = getattr(module, name)
+            break
+
+    if factory is None:
+        # fallback: search for nn.Module subclasses in module
+        for nm in dir(module):
+            attr = getattr(module, nm)
+            
+            if inspect.isclass(attr) and issubclass(attr, nn.Module):
+                # instantiate (best-effort: try no-args)
+                try:
+                    model = attr()
+                    break
+                except Exception:
+                    continue
+        else:
+            raise RuntimeError('Could not find model factory or module class to build CT-CLIP model')
+
+    if factory:
+        model = factory()  # if factory requires args, adjust to factory(**kwargs)
+
+    # Load checkpoint state_dict
+    ckpt = torch.load(checkpoint_path, map_location='cpu')
+    # Common patterns: ckpt['model_state_dict'] or ckpt contains state keys
+    if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+        state = ckpt['model_state_dict']
+    elif isinstance(ckpt, dict) and any(isinstance(v, torch.Tensor) for v in ckpt.values()):
+        state = ckpt
+    else:
+        raise RuntimeError('Checkpoint does not contain model state_dict')
+
+    model.load_state_dict(state, strict=False)
+    model.to(device).eval()
+
+    # Find visual encoder and projection
+    visual = None
+    for cand in ('visual_transformer', 'visual', 'image_encoder', 'vision'):
+        if hasattr(model, cand):
+            visual = getattr(model, cand)
+            break
+    projection = getattr(model, 'to_visual_latent', None)
+
+    class Wrapper(nn.Module):
+        def __init__(self, vis, proj=None):
+            super().__init__()
+            self.vis = vis
+            self.proj = proj
+        def forward(self, x):
+            out = self.vis(x)
+            if isinstance(out, (list, tuple)):
+                out = out[0]
+            if self.proj is not None:
+                try:
+                    return self.proj(out)
+                except Exception:
+                    return out
+            return out
+
+    wrapper = Wrapper(visual, projection).to(device)
+    return wrapper
 
 
 def adapt_model_to_feature_extractor(model: nn.Module, model_type: str) -> nn.Module:
@@ -60,7 +146,7 @@ def adapt_model_to_feature_extractor(model: nn.Module, model_type: str) -> nn.Mo
 
 
 @torch.no_grad()
-def generate_features(config, model_checkpoint: str, output_dir: Path, split: str):
+def generate_features(config, model_checkpoint: str, output_dir: Path, split: str, use_ct_clip: bool = False, ct_clip_repo_path: str = None, dry_run: bool = False):
     """
     Generates and saves feature vectors for a given dataset split.
 
@@ -77,16 +163,217 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
 
     # 2. Load and adapt the model
     logger.info(f"Loading base model from checkpoint: {model_checkpoint}")
-    model = create_model(config)
-    
-    checkpoint = torch.load(model_checkpoint, map_location=device, weights_only=False)
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
+
+    if use_ct_clip:
+        # Attempt to load the checkpoint and extract a visual encoder or serialized model
+        ckpt = torch.load(model_checkpoint, map_location=device, weights_only=False)
+
+        # If checkpoint is a dict and contains full model state, prefer to wrap it if serialized model object exists
+        model = None
+        if not ct_clip_repo_path:
+            # If the checkpoint contains a serialized model object (not just state_dict), try to load it directly
+            # Some checkpoints saved the whole model object; try that
+            if not isinstance(ckpt, dict) and hasattr(ckpt, 'state_dict'):
+                model = ckpt
+
+        # If the checkpoint is a dict, check for visual-related keys to confirm presence of image encoder
+        if isinstance(ckpt, dict):
+            visual_keys = [k for k in ckpt.keys() if k.lower().startswith('visual_transformer') or 'visual_transformer' in k.lower() or any(x in k.lower() for x in ['to_visual_latent', 'to_pixels', 'to_patch_emb', 'visual', 'vision'])]
+            if visual_keys:
+                logger.info(f"Detected visual encoder keys in checkpoint (sample): {visual_keys[:10]}")
+            else:
+                logger.warning("No visual encoder keys detected in checkpoint top-level. If the image encoder was saved under a different prefix or the checkpoint is partial, you may need the CT-CLIP repo to reconstruct the model.")
+
+        # If user provided a CT-CLIP repo path, try to import its factory and build the model there
+        ct_clip_model = None
+        if ct_clip_repo_path:
+            sys.path.insert(0, str(Path(ct_clip_repo_path).resolve()))
+            try:
+                # Try common module/class/factory names from the CT-CLIP project
+                import importlib
+                candidates = [
+                    'CT_CLIP', 'CT_CLIP.model', 'CT_CLIP.models', 'CT_CLIP.build_model',
+                    'ct_clip', 'ct_clip.model', 'ct_clip.models'
+                ]
+                imported = None
+                for cand in candidates:
+                    try:
+                        imported = importlib.import_module(cand)
+                        logger.info(f"Imported CT-CLIP module: {cand}")
+                        break
+                    except Exception:
+                        continue
+
+                if imported is not None:
+                    # try to find a factory function
+                    factory = None
+                    for name in ['build_model', 'create_model', 'load_model', 'get_model']:
+                        if hasattr(imported, name):
+                            factory = getattr(imported, name)
+                            break
+                    if factory is None:
+                        # search the module for nn.Module subclasses
+                        for attr_name in dir(imported):
+                            attr = getattr(imported, attr_name)
+                            try:
+                                if inspect.isclass(attr) and issubclass(attr, nn.Module):
+                                    # attempt to instantiate
+                                    try:
+                                        ct_clip_model = attr()
+                                        logger.info(f"Instantiated model class {attr_name} from CT-CLIP module.")
+                                        break
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                continue
+                    else:
+                        try:
+                            ct_clip_model = factory()
+                            logger.info("Instantiated CT-CLIP model using detected factory function.")
+                        except Exception as e:
+                            logger.warning(f"Factory present but instantiation failed: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to import CT-CLIP repo from {ct_clip_repo_path}: {e}")
+            finally:
+                try:
+                    sys.path.remove(str(Path(ct_clip_repo_path).resolve()))
+                except Exception:
+                    pass
+
+        # If we have a ct_clip_model object, try loading the checkpoint state_dict into it
+        if ct_clip_model is not None:
+            try:
+                # attempt to find model_state_dict in checkpoint
+                if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+                    state = ckpt['model_state_dict']
+                elif isinstance(ckpt, dict) and any(isinstance(v, torch.Tensor) for v in ckpt.values()):
+                    state = ckpt
+                else:
+                    state = None
+
+                if state is not None:
+                    # Try loading whole model first (non-strict) as a best-effort
+                    try:
+                        ct_clip_model.load_state_dict(state, strict=False)
+                        model = ct_clip_model
+                        logger.info("Loaded checkpoint state into CT-CLIP model (non-strict).")
+                    except Exception as e_full:
+                        logger.warning(f"Full model load failed: {e_full}")
+                        # FALLBACK: try to load only the visual submodule from checkpoint
+                        visual_loaded = False
+                        prefixes = ['visual_transformer', 'visual', 'image_encoder', 'vision']
+                        for pref in prefixes:
+                            try:
+                                visual_state = {k[len(pref)+1:]: v for k, v in state.items() if k.startswith(pref + '.')}
+                                if not visual_state:
+                                    continue
+                                if hasattr(ct_clip_model, pref):
+                                    vis_mod = getattr(ct_clip_model, pref)
+                                    # attempt to load visual-only parameters
+                                    try:
+                                        missing, unexpected = vis_mod.load_state_dict(visual_state, strict=False)
+                                        logger.info(f"Loaded visual submodule from checkpoint under prefix '{pref}' (missing: {len(missing)}, unexpected: {len(unexpected)})")
+                                        # build a small wrapper around the visual submodule and optional projection
+                                        proj = getattr(ct_clip_model, 'to_visual_latent', None)
+                                        class CTClipVisualWrapper(nn.Module):
+                                            def __init__(self, vis, proj=None):
+                                                super().__init__()
+                                                self.vis = vis
+                                                self.proj = proj
+                                            def forward(self, x):
+                                                out = self.vis(x)
+                                                if isinstance(out, (list, tuple)):
+                                                    out = out[0]
+                                                if self.proj is not None:
+                                                    try:
+                                                        return self.proj(out)
+                                                    except Exception:
+                                                        return out
+                                                return out
+                                        model = CTClipVisualWrapper(vis_mod, proj).to(device)
+                                        model.eval()
+                                        visual_loaded = True
+                                        break
+                                    except Exception as e_vis:
+                                        logger.warning(f"Failed loading visual submodule for prefix '{pref}': {e_vis}")
+                            except Exception:
+                                continue
+
+                        if not visual_loaded:
+                            logger.warning("Visual-only loading attempts did not succeed.")
+                else:
+                    logger.warning("No suitable state_dict found in checkpoint to load into CT-CLIP model.")
+            except Exception as e:
+                logger.warning(f"Failed to load checkpoint into CT-CLIP model: {e}")
+
+        # If we still don't have a model object but the checkpoint contains a serialized model, try to use it
+        if model is None and isinstance(ckpt, nn.Module):
+            model = ckpt
+
+        # Final guard: if no model object, we cannot proceed automatically without CT-CLIP repo
+        if model is None:
+            logger.error("Could not construct a CT-CLIP model object from the checkpoint alone.\nProvide --ct-clip-repo-path pointing to the CT-CLIP repo (or pip install it) so the model class can be instantiated and the checkpoint state_dict loaded.\nAlternatively, provide a checkpoint that contains a serialized model object.")
+            raise RuntimeError("CT-CLIP model object construction failed. See logs for details.")
+
+        # use the ct-clip model as the feature extractor; find a visual submodule or projection
+        feature_extractor = None
+        for candidate in ['visual_transformer', 'visual', 'image_encoder', 'vision']:
+            if hasattr(model, candidate):
+                feature_extractor = getattr(model, candidate)
+                logger.info(f"Using model.{candidate} as feature extractor.")
+                break
+
+        # If a projection layer exists (to_visual_latent), prefer it
+        projection = None
+        if hasattr(model, 'to_visual_latent'):
+            projection = getattr(model, 'to_visual_latent')
+        elif 'to_visual_latent.weight' in (ckpt.keys() if isinstance(ckpt, dict) else []):
+            # projection weights exist in checkpoint but the model object may expose a different name
+            projection = None
+
+        # Wrap into a callable model for consistent interface
+        if feature_extractor is not None and model is None:
+            class CTClipWrapper(nn.Module):
+                def __init__(self, feat_mod, proj_mod=None):
+                    super().__init__()
+                    self.feat = feat_mod
+                    self.proj = proj_mod
+
+                def forward(self, x):
+                    out = self.feat(x)
+                    # if out is tuple/list, try to pick first tensor
+                    if isinstance(out, (list, tuple)):
+                        out = out[0]
+                    if self.proj is not None:
+                        # if projection is Linear-like
+                        try:
+                            return self.proj(out)
+                        except Exception:
+                            return out
+                    return out
+
+            model = CTClipWrapper(feature_extractor, projection).to(device)
+            model.eval()
+        else:
+            # fallback: use model directly (if we have a full model instance)
+            if model is not None:
+                model = model.to(device)
+                model.eval()
+            else:
+                logger.error("No model or feature extractor was constructed. Cannot proceed.")
+                raise RuntimeError("CT-CLIP model object construction failed. See logs for details.")
+
     else:
-        model.load_state_dict(checkpoint)
+        model = create_model(config)
         
-    model = adapt_model_to_feature_extractor(model, config.model.type).to(device)
-    model.eval()
+        checkpoint = torch.load(model_checkpoint, map_location=device, weights_only=False)
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+            
+        model = adapt_model_to_feature_extractor(model, config.model.type).to(device)
+        model.eval()
 
     # 3. Load the data
     logger.info(f"Loading data for '{split}' split...")
@@ -141,7 +428,13 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
             output_path = split_output_dir / f"{clean_volume_name}.pt"
             torch.save(feature_vector, output_path)
 
+        # If running a dry-run, process only a single batch and exit
+        if dry_run:
+            logger.info("Dry-run mode enabled: processed one batch, exiting early.")
+            break
+
     logger.info("Feature generation complete.")
+    # If in dry-run mode, do not continue beyond the first batch (handled in loop); this is a safe exit.
 
 
 def main():
@@ -174,6 +467,23 @@ def main():
         choices=["train", "valid", "all"],
         help="The data split to process.",
     )
+    # CT-CLIP specific options
+    parser.add_argument(
+        "--use-ct-clip",
+        action="store_true",
+        help="Use a CT-CLIP checkpoint as the model source. Requires --model-checkpoint to point to the CT-CLIP .pt file.",
+    )
+    parser.add_argument(
+        "--ct-clip-repo-path",
+        type=str,
+        default=None,
+        help="Optional path to a cloned CT-CLIP repo. If provided the script will try to import CT-CLIP factory functions from it. If not provided, the checkpoint must contain a serialized model object.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Perform a quick dry-run: load model and process only a single batch (useful for testing).",
+    )
     args = parser.parse_args()
 
     # Setup logging
@@ -187,12 +497,26 @@ def main():
     config.training.batch_size = config.training.batch_size * 2
     logging.info(f"Using batch size of {config.training.batch_size} for feature extraction.")
 
-    generate_features(
-        config,
-        args.model_checkpoint,
-        Path(args.output_dir),
-        args.split,
-    )
+    # Dispatch to CT-CLIP-aware generation if requested
+    if args.use_ct_clip:
+        # Pass ct-clip-specific options to generate_features via kwargs
+        generate_features(
+            config,
+            args.model_checkpoint,
+            Path(args.output_dir),
+            args.split,
+            use_ct_clip=True,
+            ct_clip_repo_path=args.ct_clip_repo_path,
+            dry_run=args.dry_run,
+        )
+    else:
+        generate_features(
+            config,
+            args.model_checkpoint,
+            Path(args.output_dir),
+            args.split,
+            dry_run=args.dry_run,
+        )
 
 
 if __name__ == "__main__":
