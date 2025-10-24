@@ -487,9 +487,16 @@ def main():
     args = parser.parse_args()
 
     # Setup logging
-    log_dir = Path(args.output_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    setup_logging(log_file=log_dir / f"feature_generation_{args.split}.log")
+    # Primary log location: repository-level logs/ directory so errors are easy to find
+    repo_root = Path(__file__).resolve().parents[2]
+    repo_logs = repo_root / "logs"
+    repo_logs.mkdir(parents=True, exist_ok=True)
+    log_file_path = repo_logs / f"feature_generation_{args.split}.log"
+    setup_logging(log_file=log_file_path)
+
+    # Also ensure the requested output dir exists (features will be saved there)
+    out_log_dir = Path(args.output_dir)
+    out_log_dir.mkdir(parents=True, exist_ok=True)
 
     config = load_config(args.config)
     
@@ -497,26 +504,48 @@ def main():
     config.training.batch_size = config.training.batch_size * 2
     logging.info(f"Using batch size of {config.training.batch_size} for feature extraction.")
 
-    # Dispatch to CT-CLIP-aware generation if requested
-    if args.use_ct_clip:
-        # Pass ct-clip-specific options to generate_features via kwargs
-        generate_features(
-            config,
-            args.model_checkpoint,
-            Path(args.output_dir),
-            args.split,
-            use_ct_clip=True,
-            ct_clip_repo_path=args.ct_clip_repo_path,
-            dry_run=args.dry_run,
-        )
-    else:
-        generate_features(
-            config,
-            args.model_checkpoint,
-            Path(args.output_dir),
-            args.split,
-            dry_run=args.dry_run,
-        )
+    # Ensure uncaught exceptions are logged to the file
+    def _excepthook(exc_type, exc_value, exc_tb):
+        import traceback
+        logger = logging.getLogger(__name__)
+        logger.error("Uncaught exception:", exc_info=(exc_type, exc_value, exc_tb))
+        # Also write a full traceback to the log file explicitly
+        tb = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            with open(log_file_path, 'a', encoding='utf-8') as f:
+                f.write('\n===== UNCAUGHT EXCEPTION =====\n')
+                f.write(tb)
+                f.write('\n===== END TRACE =====\n')
+        except Exception:
+            pass
+
+    sys.excepthook = _excepthook
+
+    # Run generation inside try/except so we can log and persist exceptions
+    try:
+        if args.use_ct_clip:
+            # Pass ct-clip-specific options to generate_features via kwargs
+            generate_features(
+                config,
+                args.model_checkpoint,
+                Path(args.output_dir),
+                args.split,
+                use_ct_clip=True,
+                ct_clip_repo_path=args.ct_clip_repo_path,
+                dry_run=args.dry_run,
+            )
+        else:
+            generate_features(
+                config,
+                args.model_checkpoint,
+                Path(args.output_dir),
+                args.split,
+                dry_run=args.dry_run,
+            )
+    except Exception as e:
+        # Log full traceback to the configured logger and ensure it's appended to the log file
+        logging.getLogger(__name__).exception("Feature generation failed with an exception")
+        raise
 
 
 if __name__ == "__main__":
