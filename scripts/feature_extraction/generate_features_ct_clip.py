@@ -450,9 +450,10 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
 
     for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Generating features for '{split}' split")):
         images = batch["image"].to(device)
+        # Use the filtered DataFrame for volume names
         start_idx = batch_idx * batch_size
         end_idx = start_idx + len(images)
-        volume_names = df_volumes.iloc[start_idx:end_idx]['VolumeName'].tolist()
+        volume_names = df_volumes_to_process.iloc[start_idx:end_idx]['VolumeName'].tolist()
 
         if use_ct_clip:
             with torch.no_grad():
@@ -466,9 +467,6 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
         for i, volume_name in enumerate(volume_names):
             clean_volume_name = volume_name.replace(".nii.gz", "").replace(".nii", "")
             output_path = model_features_dir / f"{clean_volume_name}.pt"
-            if output_path.exists():
-                logger.info(f"Skipping {clean_volume_name}: feature already exists.")
-                continue
             feature_vector = features[i]
             torch.save(feature_vector, output_path)
 
