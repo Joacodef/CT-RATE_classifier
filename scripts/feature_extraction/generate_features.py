@@ -386,33 +386,35 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
     logger.info(f"Saving features to: {split_output_dir}")
 
     batch_size = config.training.batch_size
+
+    from transformers import BertTokenizer
+    tokenizer = None
+    if use_ct_clip:
+        tokenizer = BertTokenizer.from_pretrained('microsoft/BiomedVLP-CXR-BERT-specialized', do_lower_case=True)
+
     for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Generating features for '{split}' split")):
         images = batch["image"].to(device)
-        # Retrieve volume names from the original dataframe using the batch index,
-        # as the unshuffled DataLoader guarantees sequential order.
         start_idx = batch_idx * batch_size
         end_idx = start_idx + len(images)
         volume_names = df_volumes.iloc[start_idx:end_idx]['VolumeName'].tolist()
 
-        # Use only the visual encoder for CT-CLIP
         if use_ct_clip:
             with torch.no_grad():
-                features = model.visual_transformer(images)
-                # Optionally, flatten and project if you want the projected features:
-                if hasattr(model, 'to_visual_latent'):
-                    features = model.to_visual_latent(features.view(features.size(0), -1))
+                # Prepare dummy text tokens (empty string for each image)
+                text_tokens = tokenizer([""] * images.size(0), return_tensors="pt", padding="max_length", truncation=True, max_length=200).to(device)
+                # Call the full CTCLIP model with return_latents=True
+                _, image_latents, _ = model(text_tokens, images, return_latents=True)
+                features = image_latents
         else:
             features = model(images)
         features = features.cpu()
 
         for i, volume_name in enumerate(volume_names):
             feature_vector = features[i]
-            # Ensure the volume name is clean for the filename
             clean_volume_name = volume_name.replace(".nii.gz", "").replace(".nii", "")
             output_path = split_output_dir / f"{clean_volume_name}.pt"
             torch.save(feature_vector, output_path)
 
-        # If running a dry-run, process only a single batch and exit
         if dry_run:
             logger.info("Dry-run mode enabled: processed one batch, exiting early.")
             break
