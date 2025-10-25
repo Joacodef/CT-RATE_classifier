@@ -219,7 +219,7 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
                                 if inspect.isclass(attr) and issubclass(attr, nn.Module):
                                     # attempt to instantiate
                                     try:
-                                        ct_clip_model = attr()
+                                        ct_clip_model = attr(dim_image=294912)
                                         logger.info(f"Instantiated model class {attr_name} from CT-CLIP module.")
                                         break
                                     except Exception:
