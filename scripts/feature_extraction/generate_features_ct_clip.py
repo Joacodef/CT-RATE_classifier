@@ -365,10 +365,31 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
 
     logger.info(f"Found {len(df_volumes)} volumes to process for the '{split}' split.")
 
-    # 4. Create the data pipeline
+
+    # --- Only process volumes without existing features ---
+    import os
+    checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint))[0]
+    features_root = output_dir
+    model_features_dir = features_root / checkpoint_name / split
+    model_features_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saving features to: {model_features_dir}")
+
+    # Filter df_volumes to only those without a .pt file
+    def feature_exists(volume_name):
+        clean_name = volume_name.replace(".nii.gz", "").replace(".nii", "")
+        return (model_features_dir / f"{clean_name}.pt").exists()
+
+    mask = ~df_volumes['VolumeName'].apply(feature_exists)
+    df_volumes_to_process = df_volumes[mask].reset_index(drop=True)
+    logger.info(f"{len(df_volumes_to_process)} volumes to process after skipping existing features.")
+
+    if len(df_volumes_to_process) == 0:
+        logger.info("All features already exist. Nothing to do.")
+        return
+
     preprocess_transforms = get_preprocessing_transforms(config)
     base_dataset = CTMetadataDataset(
-        dataframe=df_volumes,
+        dataframe=df_volumes_to_process,
         img_dir=config.paths.img_dir,
         path_mode=config.paths.dir_structure,
     )
@@ -381,13 +402,8 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
     )
 
 
-    import json, os
-    # --- Create subfolder named after checkpoint (without extension) ---
-    checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint))[0]
-    features_root = output_dir
-    model_features_dir = features_root / checkpoint_name / split
-    model_features_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Saving features to: {model_features_dir}")
+
+    import json
 
     # --- Save minimal config JSON ---
     import numpy as np
