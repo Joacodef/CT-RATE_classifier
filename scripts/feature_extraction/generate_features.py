@@ -402,8 +402,8 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
             with torch.no_grad():
                 # Prepare dummy text tokens (empty string for each image)
                 text_tokens = tokenizer([""] * images.size(0), return_tensors="pt", padding="max_length", truncation=True, max_length=200).to(device)
-                # Call the full CTCLIP model with return_latents=True
-                _, image_latents, _ = model(text_tokens, images, return_latents=True)
+                # Call the full CTCLIP model with return_latents=True and pass device
+                _, image_latents, _ = model(text_tokens, images, device=device, return_latents=True)
                 features = image_latents
         else:
             features = model(images)
