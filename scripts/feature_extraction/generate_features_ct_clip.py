@@ -424,9 +424,6 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
     if use_ct_clip:
         tokenizer = BertTokenizer.from_pretrained('microsoft/BiomedVLP-CXR-BERT-specialized', do_lower_case=True)
 
-    # --- Resume logic: check for existing feature files and skip ---
-    existing_features = set([os.path.splitext(fn)[0] for fn in os.listdir(model_features_dir) if fn.endswith('.pt')])
-
     for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Generating features for '{split}' split")):
         images = batch["image"].to(device)
         start_idx = batch_idx * batch_size
@@ -444,11 +441,11 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
 
         for i, volume_name in enumerate(volume_names):
             clean_volume_name = volume_name.replace(".nii.gz", "").replace(".nii", "")
-            if clean_volume_name in existing_features:
+            output_path = model_features_dir / f"{clean_volume_name}.pt"
+            if output_path.exists():
                 logger.info(f"Skipping {clean_volume_name}: feature already exists.")
                 continue
             feature_vector = features[i]
-            output_path = model_features_dir / f"{clean_volume_name}.pt"
             torch.save(feature_vector, output_path)
 
         if dry_run:
