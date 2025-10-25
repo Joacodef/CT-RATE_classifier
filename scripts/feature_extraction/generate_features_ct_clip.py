@@ -380,10 +380,34 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
         shuffle=False,
     )
 
-    # 5. Feature extraction loop
-    split_output_dir = output_dir / split
-    split_output_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Saving features to: {split_output_dir}")
+
+    import json, os
+    # --- Create subfolder named after checkpoint (without extension) ---
+    checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint))[0]
+    features_root = output_dir
+    model_features_dir = features_root / checkpoint_name / split
+    model_features_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saving features to: {model_features_dir}")
+
+    # --- Save minimal config JSON ---
+    minimal_config = {
+        "model": {
+            "type": getattr(config.model, 'type', 'unknown'),
+            "params": getattr(config.model, 'params', {}),
+            "checkpoint": os.path.basename(model_checkpoint)
+        },
+        "preprocessing": {
+            "target_shape": getattr(config.image_processing, 'target_shape_dhw', None),
+            "target_spacing": getattr(config.image_processing, 'target_spacing', None),
+            "clip_hu_min": getattr(config.image_processing, 'clip_hu_min', None),
+            "clip_hu_max": getattr(config.image_processing, 'clip_hu_max', None),
+            "normalization": getattr(config.image_processing, 'normalization', None)
+        },
+        "split": split
+    }
+    config_json_path = features_root / checkpoint_name / f"config_{split}.json"
+    with open(config_json_path, "w") as f:
+        json.dump(minimal_config, f, indent=2)
 
     batch_size = config.training.batch_size
 
@@ -391,6 +415,9 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
     tokenizer = None
     if use_ct_clip:
         tokenizer = BertTokenizer.from_pretrained('microsoft/BiomedVLP-CXR-BERT-specialized', do_lower_case=True)
+
+    # --- Resume logic: check for existing feature files and skip ---
+    existing_features = set([os.path.splitext(fn)[0] for fn in os.listdir(model_features_dir) if fn.endswith('.pt')])
 
     for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Generating features for '{split}' split")):
         images = batch["image"].to(device)
@@ -400,9 +427,7 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
 
         if use_ct_clip:
             with torch.no_grad():
-                # Prepare dummy text tokens (empty string for each image)
                 text_tokens = tokenizer([""] * images.size(0), return_tensors="pt", padding="max_length", truncation=True, max_length=200).to(device)
-                # Call the full CTCLIP model with return_latents=True and pass device
                 _, image_latents, _ = model(text_tokens, images, device=device, return_latents=True)
                 features = image_latents
         else:
@@ -410,9 +435,12 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
         features = features.cpu()
 
         for i, volume_name in enumerate(volume_names):
-            feature_vector = features[i]
             clean_volume_name = volume_name.replace(".nii.gz", "").replace(".nii", "")
-            output_path = split_output_dir / f"{clean_volume_name}.pt"
+            if clean_volume_name in existing_features:
+                logger.info(f"Skipping {clean_volume_name}: feature already exists.")
+                continue
+            feature_vector = features[i]
+            output_path = model_features_dir / f"{clean_volume_name}.pt"
             torch.save(feature_vector, output_path)
 
         if dry_run:

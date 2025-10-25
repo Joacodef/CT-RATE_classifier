@@ -13,7 +13,7 @@ from unittest.mock import patch
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 
-from scripts.feature_extraction.generate_features import main as generate_features_main
+from code.scripts.feature_extraction.generate_features_ct_clip import main as generate_features_main
 from src.models.resnet3d import resnet18_3d
 
 # --- Fixtures ---
@@ -103,11 +103,11 @@ class TestGenerateFeaturesScript:
     def test_script_runs_and_creates_features(self, mock_argv, setup_feature_extraction_environment):
         """
         Tests that the script runs end-to-end, creating the correct feature
-        files in the specified output directory.
+        files in the specified output directory (checkpoint-named subfolder).
         """
         # 1. Arrange: Get paths from the test environment fixture
         env = setup_feature_extraction_environment
-        
+        checkpoint_name = Path(env["model_checkpoint_path"]).stem
         # Mock the command-line arguments that the script expects
         mock_argv.extend([
             "generate_features.py",
@@ -121,16 +121,19 @@ class TestGenerateFeaturesScript:
         generate_features_main()
 
         # 3. Assert: Verify the outputs
-        output_path = Path(env["output_dir"]) / "all"
+        output_path = Path(env["output_dir"]) / checkpoint_name / "all"
         assert output_path.exists(), "The output directory for the split was not created."
 
         # Check that the correct number of feature files were created
         feature_files = list(output_path.glob("*.pt"))
         assert len(feature_files) == env["num_volumes"]
 
+        # Check that the config JSON exists in the checkpoint-named folder
+        config_json_path = Path(env["output_dir"]) / checkpoint_name / "config_all.json"
+        assert config_json_path.exists(), "The minimal config JSON was not created."
+
         # Load one of the feature files to inspect its content
         loaded_feature = torch.load(feature_files[0], weights_only=False)
-        
         assert isinstance(loaded_feature, torch.Tensor)
         assert loaded_feature.ndim == 1, "Feature should be a 1D vector."
         assert loaded_feature.shape[0] == env["expected_feature_dim"]
