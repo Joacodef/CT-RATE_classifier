@@ -186,59 +186,36 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
 
         # If user provided a CT-CLIP repo path, try to import its factory and build the model there
         ct_clip_model = None
-        if ct_clip_repo_path:
-            sys.path.insert(0, str(Path(ct_clip_repo_path).resolve()))
-            try:
-                # Try common module/class/factory names from the CT-CLIP project
-                import importlib
-                candidates = [
-                    'CT_CLIP', 'CT_CLIP.model', 'CT_CLIP.models', 'CT_CLIP.build_model',
-                    'ct_clip', 'ct_clip.model', 'ct_clip.models'
-                ]
-                imported = None
-                for cand in candidates:
-                    try:
-                        imported = importlib.import_module(cand)
-                        logger.info(f"Imported CT-CLIP module: {cand}")
-                        break
-                    except Exception:
-                        continue
-
-                if imported is not None:
-                    # try to find a factory function
-                    factory = None
-                    for name in ['build_model', 'create_model', 'load_model', 'get_model']:
-                        if hasattr(imported, name):
-                            factory = getattr(imported, name)
-                            break
-                    if factory is None:
-                        # search the module for nn.Module subclasses
-                        for attr_name in dir(imported):
-                            attr = getattr(imported, attr_name)
-                            try:
-                                if inspect.isclass(attr) and issubclass(attr, nn.Module):
-                                    # attempt to instantiate
-                                    try:
-                                        ct_clip_model = attr(dim_image=294912)
-                                        logger.info(f"Instantiated model class {attr_name} from CT-CLIP module.")
-                                        break
-                                    except Exception:
-                                        continue
-                            except Exception:
-                                continue
-                    else:
-                        try:
-                            ct_clip_model = factory()
-                            logger.info("Instantiated CT-CLIP model using detected factory function.")
-                        except Exception as e:
-                            logger.warning(f"Factory present but instantiation failed: {e}")
-            except Exception as e:
-                logger.warning(f"Failed to import CT-CLIP repo from {ct_clip_repo_path}: {e}")
-            finally:
-                try:
-                    sys.path.remove(str(Path(ct_clip_repo_path).resolve()))
-                except Exception:
-                    pass
+        # Always import and instantiate with correct parameters
+        try:
+            from ct_clip import CTCLIP
+            from transformer_maskgit import CTViT
+            from transformers import BertModel
+            ct_clip_model = CTCLIP(
+                image_encoder=CTViT(
+                    dim=512,
+                    codebook_size=8192,
+                    image_size=480,
+                    patch_size=20,
+                    temporal_patch_size=10,
+                    spatial_depth=4,
+                    temporal_depth=4,
+                    dim_head=32,
+                    heads=8
+                ),
+                text_encoder=BertModel.from_pretrained("microsoft/BiomedVLP-CXR-BERT-specialized"),
+                dim_text=768,
+                dim_image=294912,
+                dim_latent=512,
+                extra_latent_projection=False,
+                use_mlm=False,
+                downsample_image_embeds=False,
+                use_all_token_embeds=False
+            )
+            logger.info("Instantiated CTCLIP model with correct parameters.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate CTCLIP model: {e}")
+            raise
 
         # If we have a ct_clip_model object, try loading the checkpoint state_dict into it
         if ct_clip_model is not None:
