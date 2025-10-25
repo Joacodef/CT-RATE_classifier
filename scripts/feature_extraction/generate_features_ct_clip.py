@@ -374,18 +374,26 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
     model_features_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Saving features to: {model_features_dir}")
 
-    # Filter df_volumes to only those without a .pt file
-    def feature_exists(volume_name):
-        clean_name = volume_name.replace(".nii.gz", "").replace(".nii", "")
-        return (model_features_dir / f"{clean_name}.pt").exists()
 
-    mask = ~df_volumes['VolumeName'].apply(feature_exists)
-    df_volumes_to_process = df_volumes[mask].reset_index(drop=True)
-    logger.info(f"{len(df_volumes_to_process)} volumes to process after skipping existing features.")
+    # Efficiently build set of existing feature file base names (no extension)
+    existing_features = set(
+        os.path.splitext(f)[0]
+        for f in os.listdir(model_features_dir)
+        if f.endswith('.pt')
+    )
 
-    if len(df_volumes_to_process) == 0:
+    # Clean volume names in the DataFrame
+    clean_names = df_volumes['VolumeName'].str.replace('.nii.gz', '', regex=False).str.replace('.nii', '', regex=False)
+    mask = ~clean_names.isin(existing_features)
+    skipped = (~mask).sum()
+    to_process = mask.sum()
+    logger.info(f"{skipped} features already exist and will be skipped. {to_process} volumes to process.")
+
+    if to_process == 0:
         logger.info("All features already exist. Nothing to do.")
         return
+
+    df_volumes_to_process = df_volumes[mask].reset_index(drop=True)
 
     preprocess_transforms = get_preprocessing_transforms(config)
     base_dataset = CTMetadataDataset(
