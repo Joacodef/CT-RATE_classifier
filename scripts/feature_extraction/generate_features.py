@@ -388,14 +388,21 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
     batch_size = config.training.batch_size
     for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Generating features for '{split}' split")):
         images = batch["image"].to(device)
-        
         # Retrieve volume names from the original dataframe using the batch index,
         # as the unshuffled DataLoader guarantees sequential order.
         start_idx = batch_idx * batch_size
         end_idx = start_idx + len(images)
         volume_names = df_volumes.iloc[start_idx:end_idx]['VolumeName'].tolist()
 
-        features = model(images)
+        # Use only the visual encoder for CT-CLIP
+        if use_ct_clip:
+            with torch.no_grad():
+                features = model.visual_transformer(images)
+                # Optionally, flatten and project if you want the projected features:
+                if hasattr(model, 'to_visual_latent'):
+                    features = model.to_visual_latent(features.view(features.size(0), -1))
+        else:
+            features = model(images)
         features = features.cpu()
 
         for i, volume_name in enumerate(volume_names):
