@@ -390,6 +390,14 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
     logger.info(f"Saving features to: {model_features_dir}")
 
     # --- Save minimal config JSON ---
+    import numpy as np
+    def to_serializable(val):
+        if isinstance(val, np.ndarray):
+            return val.tolist()
+        if hasattr(val, 'tolist') and callable(val.tolist):
+            return val.tolist()
+        return val
+
     minimal_config = {
         "model": {
             "type": getattr(config.model, 'type', 'unknown'),
@@ -397,11 +405,11 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
             "checkpoint": os.path.basename(model_checkpoint)
         },
         "preprocessing": {
-            "target_shape": getattr(config.image_processing, 'target_shape_dhw', None),
-            "target_spacing": getattr(config.image_processing, 'target_spacing', None),
-            "clip_hu_min": getattr(config.image_processing, 'clip_hu_min', None),
-            "clip_hu_max": getattr(config.image_processing, 'clip_hu_max', None),
-            "normalization": getattr(config.image_processing, 'normalization', None)
+            "target_shape": to_serializable(getattr(config.image_processing, 'target_shape_dhw', None)),
+            "target_spacing": to_serializable(getattr(config.image_processing, 'target_spacing', None)),
+            "clip_hu_min": to_serializable(getattr(config.image_processing, 'clip_hu_min', None)),
+            "clip_hu_max": to_serializable(getattr(config.image_processing, 'clip_hu_max', None)),
+            "normalization": to_serializable(getattr(config.image_processing, 'normalization', None))
         },
         "split": split
     }
