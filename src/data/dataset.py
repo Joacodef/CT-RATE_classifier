@@ -178,7 +178,7 @@ class FeatureDataset(Dataset):
     It loads feature tensors that have been previously generated and saved to disk,
     and pairs them with their corresponding pathology labels.
     """
-    def __init__(self, dataframe: pd.DataFrame, feature_dir: Path, pathology_columns: List[str]):
+    def __init__(self, dataframe: pd.DataFrame, feature_dir: Path, pathology_columns: List[str], preload_to_ram: bool = False):
         """
         Initializes the FeatureDataset.
 
@@ -186,10 +186,22 @@ class FeatureDataset(Dataset):
             dataframe (pd.DataFrame): DataFrame containing 'VolumeName' and label columns.
             feature_dir (Path): The root directory where feature vectors are stored.
             pathology_columns (List[str]): The names of the label columns in the DataFrame.
+            preload_to_ram (bool): If True, loads all features into RAM at init for fast access.
         """
         self.dataframe = dataframe
         self.feature_dir = Path(feature_dir)
         self.pathology_columns = pathology_columns
+        self.preload_to_ram = preload_to_ram
+        self._features_ram = None
+        if self.preload_to_ram:
+            self._features_ram = {}
+            for idx, row in self.dataframe.iterrows():
+                volume_name = row['VolumeName']
+                def clean_name(name):
+                    return str(name).replace('.nii.gz', '').replace('.nii', '')
+                clean_volume_name = clean_name(volume_name)
+                feature_path = self.feature_dir / f"{clean_volume_name}.pt"
+                self._features_ram[clean_volume_name] = torch.load(feature_path, weights_only=False)
 
     def __len__(self) -> int:
         """Returns the total number of samples in the dataset."""
@@ -211,12 +223,16 @@ class FeatureDataset(Dataset):
         """
         row = self.dataframe.iloc[idx]
         volume_name = row['VolumeName']
+        def clean_name(name):
+            return str(name).replace('.nii.gz', '').replace('.nii', '')
+        clean_volume_name = clean_name(volume_name)
 
-        # Construct the path to the feature file and load the tensor
-        feature_path = self.feature_dir / f"{volume_name}.pt"
-        feature_vector = torch.load(feature_path)
+        if self.preload_to_ram and self._features_ram is not None:
+            feature_vector = self._features_ram[clean_volume_name]
+        else:
+            feature_path = self.feature_dir / f"{clean_volume_name}.pt"
+            feature_vector = torch.load(feature_path, weights_only=False)
 
-        # Get the corresponding labels
         labels = torch.tensor(
             row[self.pathology_columns].values.astype(float),
             dtype=torch.float32
