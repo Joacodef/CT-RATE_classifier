@@ -93,7 +93,8 @@ def generate_test_config(setup_test_environment, monkeypatch):
         'optimization': {'gradient_checkpointing': False},
         'image_processing': {
             'target_spacing': [1.0, 1.0, 1.0], 'target_shape_dhw': [64, 64, 64],
-            'clip_hu_min': -1000, 'clip_hu_max': 1000, 'orientation_axcodes': 'RAS'
+            'clip_hu_min': -1000, 'clip_hu_max': 1000, 'orientation_axcodes': 'RAS',
+            'scale_b_min': 0.0, 'scale_b_max': 1.0
         },
         'pathologies': {'columns': env["pathologies"]}
     }

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 
-from code.scripts.feature_extraction.generate_features_ct_clip import adapt_model_to_feature_extractor
+from scripts.feature_extraction.generate_features_ct_clip import adapt_model_to_feature_extractor
 from src.models.resnet3d import resnet18_3d
 from src.models.densenet3d import densenet121_3d
 from src.models.vit3d import vit_tiny_3d

@@ -63,7 +63,8 @@ def get_preprocessing_transforms(config: Any) -> Compose:
             keys="image",
             a_min=config.image_processing.clip_hu_min,
             a_max=config.image_processing.clip_hu_max,
-            b_min=-1.0, b_max=1.0,
+            b_min=getattr(config.image_processing, "scale_b_min", 0.0),
+            b_max=getattr(config.image_processing, "scale_b_max", 1.0),
             clip=True
         ),
         Resized(keys="image", spatial_size=config.image_processing.target_shape_dhw, mode="trilinear", anti_aliasing=True),

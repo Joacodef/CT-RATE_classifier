@@ -200,8 +200,22 @@ class FeatureDataset(Dataset):
                 def clean_name(name):
                     return str(name).replace('.nii.gz', '').replace('.nii', '')
                 clean_volume_name = clean_name(volume_name)
-                feature_path = self.feature_dir / f"{clean_volume_name}.pt"
-                self._features_ram[clean_volume_name] = torch.load(feature_path, weights_only=False)
+                # Resolve possible feature filename variants to be tolerant of different test fixtures
+                candidates = [
+                    self.feature_dir / f"{clean_volume_name}.pt",
+                    self.feature_dir / f"{volume_name}.pt",
+                    self.feature_dir / f"{volume_name}",
+                ]
+                loaded = False
+                for feature_path in candidates:
+                    if feature_path.exists():
+                        self._features_ram[clean_volume_name] = torch.load(feature_path, weights_only=False)
+                        loaded = True
+                        break
+                if not loaded:
+                    raise FileNotFoundError(
+                        f"Feature file not found for volume '{volume_name}'. Tried: {candidates}"
+                    )
 
     def __len__(self) -> int:
         """Returns the total number of samples in the dataset."""
@@ -230,7 +244,19 @@ class FeatureDataset(Dataset):
         if self.preload_to_ram and self._features_ram is not None:
             feature_vector = self._features_ram[clean_volume_name]
         else:
-            feature_path = self.feature_dir / f"{clean_volume_name}.pt"
+            # Try multiple filename variants to be robust to different callers/tests
+            candidates = [
+                self.feature_dir / f"{clean_volume_name}.pt",
+                self.feature_dir / f"{volume_name}.pt",
+                self.feature_dir / f"{volume_name}",
+            ]
+            feature_path = None
+            for p in candidates:
+                if p.exists():
+                    feature_path = p
+                    break
+            if feature_path is None:
+                raise FileNotFoundError(f"Feature file not found for volume '{volume_name}'. Tried: {candidates}")
             feature_vector = torch.load(feature_path, weights_only=False)
 
         labels = torch.tensor(

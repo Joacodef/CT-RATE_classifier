@@ -13,7 +13,7 @@ from unittest.mock import patch
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 
-from code.scripts.feature_extraction.generate_features_ct_clip import main as generate_features_main
+from scripts.feature_extraction.generate_features_ct_clip import main as generate_features_main
 from src.models.resnet3d import resnet18_3d
 
 # --- Fixtures ---

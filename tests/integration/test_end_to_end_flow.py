@@ -57,9 +57,7 @@ def setup_test_environment(tmp_path):
     labels_dir = data_dir / "labels"
     output_dir = tmp_path / "output"
     cache_dir = tmp_path / "cache"
-    features_dir = output_dir / "features"
-
-    for d in [img_dir, splits_dir, labels_dir, output_dir, cache_dir, features_dir]:
+    for d in [img_dir, splits_dir, labels_dir, output_dir, cache_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     # 2. Define test parameters
@@ -94,28 +92,7 @@ def setup_test_environment(tmp_path):
         "Atelectasis": np.random.randint(0, 2, len(all_vols)),
     })
     labels_df.to_csv(labels_dir / "all_predicted_labels.csv", index=False)
-    # 5. Create dummy feature files (placed before yield so tests can access them)
-    features_dir = output_dir / "features"
-    train_features_dir = features_dir / "train"
-    valid_features_dir = features_dir / "valid"
-    train_features_dir.mkdir(parents=True, exist_ok=True)
-    valid_features_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Example feature dimension for the mock features
-    feature_dim = 512 
-    
-    for vol_name in train_vols:
-        # Save feature files with the original volume filename plus .pt so the
-        # dataset loader (which appends .pt to VolumeName) will find them.
-        feature_filename = f"{vol_name}.pt"
-        feature_tensor = torch.randn(feature_dim)
-        torch.save(feature_tensor, train_features_dir / feature_filename)
-        
-    for vol_name in valid_vols:
-        # See note above about naming
-        feature_filename = f"{vol_name}.pt"
-        feature_tensor = torch.randn(feature_dim)
-        torch.save(feature_tensor, valid_features_dir / feature_filename)
+
 
     yield {
         "root_dir": tmp_path,
@@ -123,7 +100,6 @@ def setup_test_environment(tmp_path):
         "img_dir": img_dir,
         "output_dir": output_dir,
         "cache_dir": cache_dir,
-        "features_dir": features_dir,
         "pathologies": pathologies
     }
 
@@ -157,6 +133,7 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
     monkeypatch.setenv("CACHE_DIR", str(env["cache_dir"]))
     monkeypatch.setenv("DATA_DIR", str(env["data_dir"]))
 
+    feature_dir = Path(env["output_dir"]) / f"{model_type}_cache-{use_cache}_workflow-{workflow_mode}" / "features"
     config_data = {
         'paths': {
             'img_dir': str(env["img_dir"]),
@@ -178,7 +155,7 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
         'workflow': {
             'mode': workflow_mode,
             'feature_config': {
-                'feature_dir': str(env["features_dir"])
+                'feature_dir': str(feature_dir)
             }
         },
         'loss_function': {'type': 'BCEWithLogitsLoss'},
@@ -207,15 +184,11 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
     output_dir = Path(env["output_dir"]) / f"{model_type}_cache-{use_cache}_workflow-{workflow_mode}"
     config_data['paths']['output_dir'] = str(output_dir)
 
-    config_path = root_dir / f"test_config_{model_type}_{use_cache}.yaml"
-    with open(config_path, "w") as f:
-        yaml.dump(config_data, f)
-    # Also create feature files inside the parameterized output directory so
-    # feature-based workflows can load them from the expected location.
-    final_output_dir = Path(config_data['paths']['output_dir'])
-    feature_output_dir = final_output_dir / "features"
-    train_features_dir = feature_output_dir / "train"
-    valid_features_dir = feature_output_dir / "valid"
+    # Ensure the output directory and feature subdirectories exist
+    output_dir = Path(config_data['paths']['output_dir'])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    train_features_dir = feature_dir / "train"
+    valid_features_dir = feature_dir / "valid"
     train_features_dir.mkdir(parents=True, exist_ok=True)
     valid_features_dir.mkdir(parents=True, exist_ok=True)
 
@@ -230,11 +203,7 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
         train_vols = []
         valid_vols = []
 
-    # Update the config to point to this per-run feature directory so the
-    # training workflow will look in the same place we create files.
-    config_data['workflow']['feature_config']['feature_dir'] = str(feature_output_dir)
-
-    # Create small random feature tensors matching the expected filenames
+    # Always create feature files for all train/valid volumes in the correct per-test output directory
     feature_dim = 512
     for vol_name in train_vols:
         feature_filename = f"{vol_name}.pt"
@@ -243,6 +212,11 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
     for vol_name in valid_vols:
         feature_filename = f"{vol_name}.pt"
         torch.save(torch.randn(feature_dim), valid_features_dir / feature_filename)
+
+    # Write config file after all directories and files are created
+    config_path = root_dir / f"test_config_{model_type}_{use_cache}.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config_data, f)
 
     return load_config(config_path)
 

@@ -113,6 +113,8 @@ image_processing:
   clip_hu_min: -1000
   clip_hu_max: 1000
   orientation_axcodes: "LPS"      # e.g., "LPS", "RAS"
+  scale_b_min: -1.0  # Minimum value after intensity scaling
+  scale_b_max: 1.0  # Maximum value after intensity scaling
 
 # --- Cache Configuration ---
 cache:
