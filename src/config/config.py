@@ -1,5 +1,6 @@
 import os
 import re
+import warnings
 import yaml
 from pathlib import Path
 from types import SimpleNamespace
@@ -99,10 +100,6 @@ def load_config(config_path: str | Path) -> SimpleNamespace:
             cfg.paths.cache_dir = Path(cfg.paths.cache_dir).resolve()
         if hasattr(cfg.paths, 'output_dir'):
             cfg.paths.output_dir = Path(cfg.paths.output_dir).resolve()
-        if hasattr(cfg.paths, 'feature_dir'):
-            # Resolve the feature_dir to an absolute path
-            cfg.paths.feature_dir = Path(cfg.paths.feature_dir).resolve()
-
         if hasattr(cfg.paths, 'data_dir'):
             data_dir = Path(cfg.paths.data_dir).resolve()
             cfg.paths.data_dir = data_dir
@@ -133,6 +130,42 @@ def load_config(config_path: str | Path) -> SimpleNamespace:
                     cfg.paths.metadata.train = data_dir / cfg.paths.metadata.train
                 if hasattr(cfg.paths.metadata, 'valid'):
                     cfg.paths.metadata.valid = data_dir / cfg.paths.metadata.valid
+
+    # Resolve workflow feature directory (with backward compatibility for legacy configs)
+    legacy_feature_dir = None
+    if hasattr(cfg, 'paths') and hasattr(cfg.paths, 'feature_dir'):
+        try:
+            legacy_feature_dir = Path(cfg.paths.feature_dir).resolve()
+        except Exception as exc:
+            raise ValueError(f"Invalid legacy paths.feature_dir: {cfg.paths.feature_dir}") from exc
+
+    if hasattr(cfg, 'workflow'):
+        if not hasattr(cfg.workflow, 'feature_config'):
+            cfg.workflow.feature_config = SimpleNamespace()
+        feature_cfg = cfg.workflow.feature_config
+        if hasattr(feature_cfg, 'feature_dir') and feature_cfg.feature_dir is not None:
+            try:
+                feature_cfg.feature_dir = Path(feature_cfg.feature_dir).resolve()
+            except Exception as exc:
+                raise ValueError(
+                    f"Invalid workflow.feature_config.feature_dir: {feature_cfg.feature_dir}"
+                ) from exc
+        elif legacy_feature_dir is not None:
+            warnings.warn(
+                "Config uses deprecated paths.feature_dir; please move it to workflow.feature_config.feature_dir.",
+                DeprecationWarning,
+            )
+            feature_cfg.feature_dir = legacy_feature_dir
+
+        if not hasattr(cfg.workflow, 'mode') or cfg.workflow.mode is None:
+            cfg.workflow.mode = 'end-to-end'
+    elif legacy_feature_dir is not None:
+        warnings.warn(
+            "Config uses deprecated paths.feature_dir without defining workflow.feature_config.feature_dir."
+            " The value will be available under config.workflow.feature_config.feature_dir, but please update your config.",
+            DeprecationWarning,
+        )
+        cfg.workflow = SimpleNamespace(feature_config=SimpleNamespace(feature_dir=legacy_feature_dir), mode='feature-based')
 
     # 5. Perform final type conversions and add computed values
     if hasattr(cfg, 'image_processing'):

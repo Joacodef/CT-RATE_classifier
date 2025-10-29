@@ -14,6 +14,7 @@ shapes/types for inspection.
 import argparse
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 # Add project root to path
 project_root = Path(__file__).resolve().parents[1]
@@ -32,22 +33,27 @@ def main():
     parser.add_argument('--split', choices=['train','valid'], default='train')
     parser.add_argument('--fold', type=int, default=None, help='Optional fold number to select train_fold_{N}.csv and valid_fold_{N}.csv')
     parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--feature-dir', type=str, default=None, help='Optional override for workflow.feature_config.feature_dir')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     # Force feature-based workflow
     if not hasattr(cfg, 'workflow'):
-        from types import SimpleNamespace
         cfg.workflow = SimpleNamespace()
     cfg.workflow.mode = 'feature-based'
     # Ensure feature config is present
     if not hasattr(cfg.workflow, 'feature_config'):
-        from types import SimpleNamespace
         cfg.workflow.feature_config = SimpleNamespace()
-    cfg.workflow.feature_config.feature_dir = cfg.paths.feature_dir
+
+    if args.feature_dir:
+        cfg.workflow.feature_config.feature_dir = Path(args.feature_dir).resolve()
+
+    feature_dir = getattr(cfg.workflow.feature_config, 'feature_dir', None)
+    if feature_dir is None:
+        raise ValueError("workflow.feature_config.feature_dir must be set in the config or via --feature-dir")
 
     # Create dataset
-    feat_root = Path(cfg.workflow.feature_config.feature_dir)
+    feat_root = Path(feature_dir)
     if (feat_root / args.split).exists():
         feat_dir = feat_root / args.split
     else:

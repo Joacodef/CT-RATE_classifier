@@ -41,6 +41,7 @@ from monai.metrics.f_beta_score import compute_f_beta_score
 from src.models.resnet3d import resnet18_3d, resnet34_3d
 from src.models.densenet3d import densenet121_3d, densenet169_3d, densenet201_3d, densenet161_3d
 from src.models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d
+from src.models.mlp import create_mlp_classifier
 
 # Internal imports - data
 from src.data.dataset import CTMetadataDataset, ApplyTransforms, LabelAttacherDataset, FeatureDataset
@@ -110,107 +111,6 @@ def create_model(config: SimpleNamespace) -> nn.Module:
     else:
         raise ValueError(f"Unknown model type: {config.model.type}")
 
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
-
-    return model
-
-def create_mlp_classifier(config: SimpleNamespace) -> nn.Module:
-    """
-    Creates a simple MLP classifier for training on pre-computed features.
-
-    Args:
-        config: The configuration object.
-
-    Returns:
-        A PyTorch MLP model.
-    """
-    # Dynamically determine the input feature size by loading one sample
-    try:
-        base_dir = Path(config.workflow.feature_config.feature_dir)
-        train_sub = base_dir / "train"
-
-        # Prefer layout with train/valid subfolders, but accept flattened layout with .pt files at root
-        if train_sub.exists() and any(train_sub.glob('*.pt')):
-            search_dir = train_sub
-            logger.info(f"Using features from subfolder: {search_dir}")
-        elif any(base_dir.glob('*.pt')):
-            search_dir = base_dir
-            logger.info(f"Using flattened feature directory: {search_dir}")
-        else:
-            raise FileNotFoundError(f"No feature files found in {base_dir}.")
-
-        # Find the first .pt file and load it
-        sample_feature_file = next(search_dir.glob("*.pt"))
-        # Loading may fail under PyTorch's weights_only safety checks (e.g., MetaTensor).
-        # Try a safe load first; on failure retry with weights_only=False (trusted local files).
-        try:
-            sample_feature = torch.load(sample_feature_file)
-        except Exception as load_exc:
-            try:
-                import _pickle as _p
-                if isinstance(load_exc, _p.UnpicklingError) or 'Weights only load failed' in str(load_exc):
-                    logger.warning(
-                        "torch.load weights-only unpickling failed for %s. Retrying with weights_only=False (unsafe).",
-                        sample_feature_file
-                    )
-                    sample_feature = torch.load(sample_feature_file, weights_only=False)
-                else:
-                    raise
-            except Exception:
-                # If retrying didn't work or raised a different error, re-raise the original
-                raise
-
-        # Support various formats: raw tensors, dicts with tensors, or MONAI MetaTensor-like objects
-        if isinstance(sample_feature, torch.Tensor):
-            in_features = sample_feature.numel()
-        elif hasattr(sample_feature, 'tensor') and isinstance(getattr(sample_feature, 'tensor'), torch.Tensor):
-            # MONAI MetaTensor often exposes the underlying tensor as .tensor
-            in_features = sample_feature.tensor.numel()
-        elif isinstance(sample_feature, dict):
-            # try common keys
-            for key in ("features", "feature", "embedding", "tensor"):
-                if key in sample_feature and isinstance(sample_feature[key], torch.Tensor):
-                    in_features = sample_feature[key].numel()
-                    break
-            else:
-                # fallback: try to find first tensor value
-                tensor_vals = [v for v in sample_feature.values() if isinstance(v, torch.Tensor)]
-                if tensor_vals:
-                    in_features = tensor_vals[0].numel()
-                else:
-                    raise ValueError("Loaded .pt is a dict but does not contain a tensor feature vector.")
-        else:
-            # Try to coerce other types (e.g., numpy arrays)
-            try:
-                import numpy as _np
-                if isinstance(sample_feature, _np.ndarray):
-                    in_features = sample_feature.size
-                else:
-                    raise ValueError("Unsupported feature file format for determining input dimension.")
-            except Exception:
-                raise ValueError("Unsupported feature file format for determining input dimension.")
-
-        logger.info(f"Determined input feature dimension from sample: {in_features}")
-    except (StopIteration, FileNotFoundError) as e:
-        raise FileNotFoundError(
-            f"No feature files found in {getattr(base_dir, 'as_posix', lambda: base_dir)()}. Please run the feature generation script first."
-        ) from e
-
-    num_classes = len(config.pathologies.columns)
-
-    model = nn.Sequential(
-        nn.Linear(in_features, 512),
-        nn.ReLU(inplace=True),
-        nn.Dropout(0.5),
-        nn.Linear(512, 256),
-        nn.ReLU(inplace=True),
-        nn.Dropout(0.3),
-        nn.Linear(256, num_classes)
-    )
-    logger.info(f"Created MLP classifier with input dim {in_features} and output dim {num_classes}")
-    
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
@@ -600,8 +500,36 @@ def train_model(
     train_df, valid_df = load_and_prepare_data(config)
 
     # Determine the training workflow
-    workflow_mode = getattr(config, 'workflow', SimpleNamespace(mode='end-to-end')).mode
-    logger.info(f"Starting training in '{workflow_mode}' mode.")
+    workflow_ns = getattr(config, 'workflow', SimpleNamespace())
+    workflow_mode = str(getattr(workflow_ns, 'mode', 'end-to-end')).lower()
+    if not hasattr(workflow_ns, 'feature_config'):
+        workflow_ns.feature_config = SimpleNamespace()
+        config.workflow = workflow_ns
+    model_type = str(getattr(config.model, 'type', '')).lower()
+
+    feature_cfg_ns = getattr(config.workflow, 'feature_config', SimpleNamespace())
+    feature_dir_configured = getattr(feature_cfg_ns, 'feature_dir', None)
+
+    logger.info(f"Workflow mode raw: '{workflow_mode}', feature_dir: {feature_dir_configured}")
+
+    if model_type == 'mlp' and workflow_mode != 'feature-based':
+        logger.warning(
+            "MLP model requires feature-based workflow. Switching workflow.mode to 'feature-based' automatically."
+        )
+        workflow_mode = 'feature-based'
+        config.workflow.mode = 'feature-based'
+
+    logger.info(f"Starting training in '{workflow_mode}' mode with model '{model_type}'.")
+
+    if workflow_mode == 'feature-based' and not feature_dir_configured:
+        raise ValueError(
+            "Feature-based workflow requires 'workflow.feature_config.feature_dir' to be configured."
+        )
+
+    if workflow_mode == 'feature-based' and model_type != 'mlp':
+        raise ValueError("Feature-based workflow requires the 'mlp' model. Please update config.model.type accordingly.")
+    if workflow_mode != 'feature-based' and model_type == 'mlp':
+        raise ValueError("MLP model is only supported in feature-based workflow. Please switch workflow.mode to 'feature-based'.")
 
     if workflow_mode == 'feature-based':
         # --- Feature-Based Workflow ---
@@ -744,9 +672,9 @@ def train_model(
         worker_init_fn=worker_init_fn
     )
 
-    if workflow_mode == 'feature-based':
+    if model_type == 'mlp':
         model = create_mlp_classifier(config).to(device)
-    else: # end-to-end
+    else:
         model = create_model(config).to(device)
         
 
@@ -784,11 +712,13 @@ def train_model(
     # Initialize GradScaler for mixed precision if enabled.
     scaler = None
     if config.optimization.mixed_precision:
-        # Use the new torch.amp.GradScaler API when available to avoid deprecation warnings.
-        try:
-            scaler = torch.amp.GradScaler(device_type=device.type)
-        except Exception:
-            # Fallback for older torch versions
+        grad_scaler_cls = getattr(torch.amp, "GradScaler", None)
+        if grad_scaler_cls is not None:
+            try:
+                scaler = grad_scaler_cls(device_type=device.type)
+            except TypeError:
+                scaler = grad_scaler_cls()
+        if scaler is None:
             scaler = torch.cuda.amp.GradScaler()
 
     # Initialize training state variables.

@@ -15,7 +15,6 @@ paths:
   base_project_dir: ${BASE_PROJECT_DIR}
   cache_dir: ${CACHE_DIR}
   data_dir: ${DATA_DIR}
-  feature_dir: ${FEATURE_DIR}
 
   dir_structure: "nested" # Options: "flat", "nested"
 
@@ -52,7 +51,7 @@ torch_dtype: "float32"
 
 # --- Model Configuration ---
 model:
-  type: "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d"
+  type: "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d", "mlp"
   variant: "tiny"      # Options depend on model type (e.g., "18", "121", "base")
 
   # Vision Transformer specific settings (only used if model.type == "vit3d")
@@ -69,6 +68,7 @@ workflow:
   # "end-to-end": Trains the model directly on image data.
   # "feature-based": A two-stage process. First, generate features with a pre-trained
   #                  model, then train a smaller classifier on those features.
+  # NOTE: set model.type to "mlp" when using "feature-based".
   mode: "end-to-end"
 
   # Settings for the feature-based workflow (only used if mode is "feature-based")

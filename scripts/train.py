@@ -118,7 +118,7 @@ def main():
         '--model-type',
         type=str,
         default=None,
-        choices=['resnet3d', 'densenet3d', 'vit3d'],
+        choices=['resnet3d', 'densenet3d', 'vit3d', 'mlp'],
         help='Override the model architecture from the config file.'
     )
     parser.add_argument(
@@ -130,7 +130,7 @@ def main():
     parser.add_argument(
         '--workflow',
         type=str,
-        default='end-to-end',
+        default=None,
         choices=['end-to-end', 'feature-based'],
         help="Set the training workflow. Use 'feature-based' to train on precomputed features."
     )
@@ -160,24 +160,26 @@ def main():
         config.model.variant = args.model_variant
 
     # Workflow-level override (only --workflow is supported from CLI)
-    if args.workflow:
+    if args.workflow is not None:
         prev_workflow = getattr(config, 'workflow', SimpleNamespace(mode='end-to-end'))
         logging.info(f"Overriding workflow.mode from '{getattr(prev_workflow, 'mode', None)}' to '{args.workflow}'")
         if not hasattr(config, 'workflow'):
             config.workflow = SimpleNamespace()
         config.workflow.mode = args.workflow
 
-    # If feature-based mode is selected, read the feature_dir from config.paths.feature_dir
+    # If feature-based mode is selected, ensure the feature directory is defined in the workflow config
     if getattr(config, 'workflow', None) and getattr(config.workflow, 'mode', None) == 'feature-based':
         if not hasattr(config.workflow, 'feature_config'):
             config.workflow.feature_config = SimpleNamespace()
-        # Use the feature_dir defined under config.paths (populated via env var)
-        if hasattr(config.paths, 'feature_dir'):
-            logging.info(f"Using feature directory from config.paths.feature_dir: {config.paths.feature_dir}")
-            config.workflow.feature_config.feature_dir = config.paths.feature_dir
-        else:
-            logging.error("Feature-based workflow selected but 'paths.feature_dir' is not set in the config.")
+
+        feature_dir = getattr(config.workflow.feature_config, 'feature_dir', None)
+        if not feature_dir:
+            logging.error(
+                "Feature-based workflow selected but 'workflow.feature_config.feature_dir' is not set in the config."
+            )
             return
+
+        logging.info(f"Using feature directory from workflow configuration: {feature_dir}")
 
         # Disable augmentations because they are incompatible with precomputed features
         if hasattr(config, 'training') and hasattr(config.training, 'augment'):
@@ -200,7 +202,7 @@ def main():
         # --- Sanity checks: ensure feature dir and required subfolders exist ---
         try:
             from pathlib import Path as _Path
-            feature_root = _Path(config.workflow.feature_config.feature_dir)
+            feature_root = _Path(feature_dir)
             if not feature_root.exists():
                 logging.error(f"Feature directory does not exist: {feature_root}")
                 return
@@ -322,6 +324,21 @@ def main():
         config.training.resume_from_checkpoint = None
 
     logger.info(f"Output will be saved to: {config.paths.output_dir}")
+    workflow_ns = getattr(config, 'workflow', None)
+    current_mode = getattr(workflow_ns, 'mode', None) if workflow_ns else None
+    feature_cfg_ns = getattr(workflow_ns, 'feature_config', SimpleNamespace()) if workflow_ns else SimpleNamespace()
+    current_feature_dir = getattr(feature_cfg_ns, 'feature_dir', None)
+    logging.info(
+        "Current workflow config before training: mode=%s, feature_dir=%s",
+        current_mode,
+        current_feature_dir,
+    )
+    if (
+        workflow_ns
+        and getattr(workflow_ns, "mode", None) == "feature-based"
+        and current_feature_dir is None
+    ):
+        logging.warning("workflow.feature_config.feature_dir is None after loading config.")
 
     # 5. Setup logging and start training
     log_dir = Path(config.paths.output_dir)
