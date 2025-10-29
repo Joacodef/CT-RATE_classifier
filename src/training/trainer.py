@@ -236,19 +236,75 @@ def load_and_prepare_data(config: SimpleNamespace) -> Tuple[pd.DataFrame, pd.Dat
         ValueError: If dataframes are empty or essential columns are missing.
     """
     logger.info("Loading DataFrames for the current data split...")
+
+    def _normalize_volume_name(name: Any) -> Optional[str]:
+        if pd.isna(name):
+            return None
+
+        name_str = str(name).strip()
+        if not name_str:
+            return None
+
+        lowered = name_str.lower()
+        for ext in ('.nii.gz', '.nii'):
+            if lowered.endswith(ext):
+                return name_str[: -len(ext)]
+        return name_str
+
     try:
         data_dir = Path(config.paths.data_dir).resolve()
         # Load the volume lists for the current training and validation split
-        train_volumes = pd.read_csv(Path(data_dir) / config.paths.data_subsets.train)[['VolumeName']]
-        valid_volumes = pd.read_csv(Path(data_dir) / config.paths.data_subsets.valid)[['VolumeName']]
-        
+        train_volumes = pd.read_csv(Path(data_dir) / config.paths.data_subsets.train)[['VolumeName']].copy()
+        valid_volumes = pd.read_csv(Path(data_dir) / config.paths.data_subsets.valid)[['VolumeName']].copy()
+
+        train_volumes['__volume_key'] = train_volumes['VolumeName'].apply(_normalize_volume_name)
+        valid_volumes['__volume_key'] = valid_volumes['VolumeName'].apply(_normalize_volume_name)
+        train_volumes['__order'] = np.arange(len(train_volumes))
+        valid_volumes['__order'] = np.arange(len(valid_volumes))
+
+        if train_volumes['__volume_key'].isna().any():
+            missing_raw = train_volumes.loc[train_volumes['__volume_key'].isna(), 'VolumeName'].tolist()
+            raise ValueError(f"Unable to normalize training volume names: {missing_raw}")
+        if valid_volumes['__volume_key'].isna().any():
+            missing_raw = valid_volumes.loc[valid_volumes['__volume_key'].isna(), 'VolumeName'].tolist()
+            raise ValueError(f"Unable to normalize validation volume names: {missing_raw}")
+
         # Load the single, unified labels file for all volumes
-        all_labels = pd.read_csv(Path(data_dir) / config.paths.labels.all)
+        all_labels = pd.read_csv(Path(data_dir) / config.paths.labels.all).copy()
         logger.info(f"Loaded {len(all_labels)} total labels from the unified labels file at {config.paths.labels.all}")
-        
-        # Merge the split volumes with the unified labels file
-        train_df = pd.merge(train_volumes, all_labels, on='VolumeName', how='inner')
-        valid_df = pd.merge(valid_volumes, all_labels, on='VolumeName', how='inner')
+
+        all_labels['__volume_key'] = all_labels['VolumeName'].apply(_normalize_volume_name)
+
+        label_keys = set(all_labels['__volume_key'].dropna())
+
+        missing_train = train_volumes.loc[~train_volumes['__volume_key'].isin(label_keys), 'VolumeName']
+        if not missing_train.empty:
+            raise ValueError(
+                "Training volume names not found in labels (after normalizing extensions): "
+                f"{sorted(missing_train.tolist())}"
+            )
+
+        missing_valid = valid_volumes.loc[~valid_volumes['__volume_key'].isin(label_keys), 'VolumeName']
+        if not missing_valid.empty:
+            raise ValueError(
+                "Validation volume names not found in labels (after normalizing extensions): "
+                f"{sorted(missing_valid.tolist())}"
+            )
+
+        # Merge the split volumes with the unified labels file using normalized keys
+        train_df = pd.merge(
+            train_volumes[['__volume_key', '__order']],
+            all_labels,
+            on='__volume_key',
+            how='inner'
+        ).sort_values('__order').drop(columns=['__volume_key', '__order']).reset_index(drop=True)
+
+        valid_df = pd.merge(
+            valid_volumes[['__volume_key', '__order']],
+            all_labels,
+            on='__volume_key',
+            how='inner'
+        ).sort_values('__order').drop(columns=['__volume_key', '__order']).reset_index(drop=True)
         
     except FileNotFoundError as e:
         logger.error(f"Required CSV file not found: {e}")

@@ -124,9 +124,12 @@ def test_train_script_resume_with_checkpoint(mock_train_model, test_environment,
     config_path = test_environment["config_path"]
     output_dir = test_environment["output_dir"]
 
-    # Create the checkpoint directly in the base output directory, which is
-    # the correct location when the --fold argument is not used.
-    checkpoint_path = output_dir / "last_checkpoint.pth"
+    split_dir = output_dir / "tiny_split"
+    fold_dir = split_dir / "full"
+    run_dir = fold_dir / "run_test"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint_path = run_dir / "last_checkpoint.pth"
     checkpoint_path.touch()
 
     # Simulate running the script with the resume flag but without specifying a fold.
