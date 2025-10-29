@@ -443,9 +443,15 @@ def generate_features(config, model_checkpoint: str, output_dir: Path, split: st
 
     batch_size = config.training.batch_size
 
-    from transformers import BertTokenizer
     tokenizer = None
     if use_ct_clip:
+        try:
+            from transformers import BertTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "CT-CLIP feature extraction requires the 'transformers' package. "
+                "Install it via `pip install transformers` or add it to your environment."
+            ) from exc
         tokenizer = BertTokenizer.from_pretrained('microsoft/BiomedVLP-CXR-BERT-specialized', do_lower_case=True)
 
     for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Generating features for '{split}' split")):
