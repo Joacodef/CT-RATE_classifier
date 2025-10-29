@@ -13,6 +13,7 @@ import torch
 from torch.utils.data import Dataset
 
 from src.data.utils import get_dynamic_image_path
+from tqdm.auto import tqdm
 
 # Get a logger for this module
 logger = logging.getLogger(__name__)
@@ -195,7 +196,8 @@ class FeatureDataset(Dataset):
         self._features_ram = None
         if self.preload_to_ram:
             self._features_ram = {}
-            for idx, row in self.dataframe.iterrows():
+            # Use a progress bar to give feedback when preloading many features into RAM
+            for idx, row in tqdm(self.dataframe.iterrows(), total=len(self.dataframe), desc="Preloading features", unit="file"):
                 volume_name = row['VolumeName']
                 def clean_name(name):
                     return str(name).replace('.nii.gz', '').replace('.nii', '')
@@ -209,7 +211,20 @@ class FeatureDataset(Dataset):
                 loaded = False
                 for feature_path in candidates:
                     if feature_path.exists():
-                        self._features_ram[clean_volume_name] = torch.load(feature_path, weights_only=False)
+                        # Some feature files may contain tensors or dicts; load with weights_only=False for safety
+                        try:
+                            feat = torch.load(feature_path, weights_only=False)
+                        except Exception:
+                            feat = torch.load(feature_path)
+                        # If it's a dict with tensors, try to extract the tensor
+                        if isinstance(feat, dict):
+                            tensor_vals = [v for v in feat.values() if isinstance(v, torch.Tensor)]
+                            if tensor_vals:
+                                feat = tensor_vals[0]
+                        # If it's a MetaTensor-like object, try .tensor
+                        if hasattr(feat, 'tensor') and isinstance(getattr(feat, 'tensor'), torch.Tensor):
+                            feat = feat.tensor
+                        self._features_ram[clean_volume_name] = feat
                         loaded = True
                         break
                 if not loaded:

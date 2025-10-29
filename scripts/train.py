@@ -3,6 +3,7 @@ import sys
 import argparse
 from pathlib import Path
 import logging
+from types import SimpleNamespace
 import torch
 import torch.multiprocessing
 
@@ -68,6 +69,13 @@ def main():
         help='Override the model variant from the config file.'
     )
     parser.add_argument(
+        '--workflow',
+        type=str,
+        default='end-to-end',
+        choices=['end-to-end', 'feature-based'],
+        help="Set the training workflow. Use 'feature-based' to train on precomputed features."
+    )
+    parser.add_argument(
         '--resume',
         nargs='?',
         const=True,
@@ -92,6 +100,76 @@ def main():
         logging.info(f"Overriding model.variant from '{config.model.variant}' to '{args.model_variant}'")
         config.model.variant = args.model_variant
 
+    # Workflow-level override (only --workflow is supported from CLI)
+    if args.workflow:
+        prev_workflow = getattr(config, 'workflow', SimpleNamespace(mode='end-to-end'))
+        logging.info(f"Overriding workflow.mode from '{getattr(prev_workflow, 'mode', None)}' to '{args.workflow}'")
+        if not hasattr(config, 'workflow'):
+            config.workflow = SimpleNamespace()
+        config.workflow.mode = args.workflow
+
+    # If feature-based mode is selected, read the feature_dir from config.paths.feature_dir
+    if getattr(config, 'workflow', None) and getattr(config.workflow, 'mode', None) == 'feature-based':
+        if not hasattr(config.workflow, 'feature_config'):
+            config.workflow.feature_config = SimpleNamespace()
+        # Use the feature_dir defined under config.paths (populated via env var)
+        if hasattr(config.paths, 'feature_dir'):
+            logging.info(f"Using feature directory from config.paths.feature_dir: {config.paths.feature_dir}")
+            config.workflow.feature_config.feature_dir = config.paths.feature_dir
+        else:
+            logging.error("Feature-based workflow selected but 'paths.feature_dir' is not set in the config.")
+            return
+
+        # Disable augmentations because they are incompatible with precomputed features
+        if hasattr(config, 'training') and hasattr(config.training, 'augment'):
+            logging.info('Disabling on-the-fly augmentations for feature-based workflow')
+            config.training.augment = False
+        # On Windows, DataLoader workers commonly hang when loading complex objects.
+        # Force a safe single-process data loading configuration to avoid hangs.
+        try:
+            if sys.platform.startswith('win'):
+                if hasattr(config.training, 'num_workers') and config.training.num_workers > 0:
+                    logging.warning(
+                        "Windows detected: overriding training.num_workers>0 to 0 and disabling pin_memory to avoid DataLoader hangs for feature-based workflow."
+                    )
+                    config.training.num_workers = 0
+                    if hasattr(config.training, 'pin_memory'):
+                        config.training.pin_memory = False
+        except Exception:
+            # don't crash on unexpected config shapes; this is a best-effort mitigation
+            pass
+        # --- Sanity checks: ensure feature dir and required subfolders exist ---
+        try:
+            from pathlib import Path as _Path
+            feature_root = _Path(config.workflow.feature_config.feature_dir)
+            if not feature_root.exists():
+                logging.error(f"Feature directory does not exist: {feature_root}")
+                return
+
+            train_sub = feature_root / 'train'
+            valid_sub = feature_root / 'valid'
+
+            # Accept either layout A: feature_root/{train,valid} OR layout B: feature_root contains all .pt files
+            has_subfolders = train_sub.exists() and valid_sub.exists()
+            has_pt_files_at_root = any(feature_root.glob('*.pt'))
+
+            if not has_subfolders and not has_pt_files_at_root:
+                logging.error(
+                    "Feature directory must either contain 'train' and 'valid' subfolders, "
+                    "or contain .pt feature files at its top level. "
+                    f"Checked: {feature_root}"
+                )
+                return
+
+            if has_subfolders:
+                logging.info("Detected feature layout with 'train' and 'valid' subfolders.")
+            else:
+                logging.info("Detected flattened feature layout: using the same feature dir for both train and valid.")
+
+        except Exception as e:
+            logging.error(f"Error while checking feature directory: {e}")
+            return
+
     # 3. Dynamically set paths based on the specified fold
     if args.fold is not None:
         logger.info(f"Running training for fold: {args.fold}")
@@ -107,11 +185,16 @@ def main():
         logger.info(f"Using training data: {config.paths.data_subsets.train}")
         logger.info(f"Using validation data: {config.paths.data_subsets.valid}")
 
-        # Modify the output directory to be fold-specific
-        # This prevents folds from overwriting each other's checkpoints and logs
-        base_output_dir = Path(config.paths.output_dir)
-        config.paths.output_dir = str(base_output_dir / f"fold_{args.fold}")
-        logger.info(f"Output will be saved to: {config.paths.output_dir}")
+    # Modify the output directory to be fold-specific only if a fold was provided.
+    # This prevents folds from overwriting each other's checkpoints and logs.
+    base_output_dir = Path(config.paths.output_dir)
+    if args.fold is not None:
+        # Keep output_dir as a Path object (other code expects Path operations)
+        config.paths.output_dir = base_output_dir / f"fold_{args.fold}"
+    else:
+        # Ensure output_dir is a Path for downstream usage
+        config.paths.output_dir = base_output_dir
+    logger.info(f"Output will be saved to: {config.paths.output_dir}")
 
     # 4. Handle resume logic
     if args.resume is not None:

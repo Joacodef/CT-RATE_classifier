@@ -15,6 +15,7 @@ paths:
   base_project_dir: ${BASE_PROJECT_DIR}
   cache_dir: ${CACHE_DIR}
   data_dir: ${DATA_DIR}
+  feature_dir: ${FEATURE_DIR}
 
   dir_structure: "nested" # Options: "flat", "nested"
 
@@ -99,6 +100,9 @@ training:
   prefetch_factor: 2  # Number of batches to prefetch in DataLoader
   early_stopping_patience: 5
   resume_from_checkpoint: null # Set to a path like 'path/to/checkpoint.pth' to resume
+  # If true and using feature-based workflow, preload all feature .pt tensors into RAM at dataset init.
+  # WARNING: enabling this may use a lot of memory depending on dataset size.
+  features_preload_to_ram: false
 
 # --- Training Optimizations ---
 optimization:

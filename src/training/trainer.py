@@ -128,17 +128,75 @@ def create_mlp_classifier(config: SimpleNamespace) -> nn.Module:
     """
     # Dynamically determine the input feature size by loading one sample
     try:
-        feature_dir = Path(config.workflow.feature_config.feature_dir) / "train"
-        # Find the first .pt file in the directory
-        sample_feature_file = next(feature_dir.glob("*.pt"))
-        sample_feature = torch.load(sample_feature_file)
-        in_features = sample_feature.shape[0]
+        base_dir = Path(config.workflow.feature_config.feature_dir)
+        train_sub = base_dir / "train"
+
+        # Prefer layout with train/valid subfolders, but accept flattened layout with .pt files at root
+        if train_sub.exists() and any(train_sub.glob('*.pt')):
+            search_dir = train_sub
+            logger.info(f"Using features from subfolder: {search_dir}")
+        elif any(base_dir.glob('*.pt')):
+            search_dir = base_dir
+            logger.info(f"Using flattened feature directory: {search_dir}")
+        else:
+            raise FileNotFoundError(f"No feature files found in {base_dir}.")
+
+        # Find the first .pt file and load it
+        sample_feature_file = next(search_dir.glob("*.pt"))
+        # Loading may fail under PyTorch's weights_only safety checks (e.g., MetaTensor).
+        # Try a safe load first; on failure retry with weights_only=False (trusted local files).
+        try:
+            sample_feature = torch.load(sample_feature_file)
+        except Exception as load_exc:
+            try:
+                import _pickle as _p
+                if isinstance(load_exc, _p.UnpicklingError) or 'Weights only load failed' in str(load_exc):
+                    logger.warning(
+                        "torch.load weights-only unpickling failed for %s. Retrying with weights_only=False (unsafe).",
+                        sample_feature_file
+                    )
+                    sample_feature = torch.load(sample_feature_file, weights_only=False)
+                else:
+                    raise
+            except Exception:
+                # If retrying didn't work or raised a different error, re-raise the original
+                raise
+
+        # Support various formats: raw tensors, dicts with tensors, or MONAI MetaTensor-like objects
+        if isinstance(sample_feature, torch.Tensor):
+            in_features = sample_feature.numel()
+        elif hasattr(sample_feature, 'tensor') and isinstance(getattr(sample_feature, 'tensor'), torch.Tensor):
+            # MONAI MetaTensor often exposes the underlying tensor as .tensor
+            in_features = sample_feature.tensor.numel()
+        elif isinstance(sample_feature, dict):
+            # try common keys
+            for key in ("features", "feature", "embedding", "tensor"):
+                if key in sample_feature and isinstance(sample_feature[key], torch.Tensor):
+                    in_features = sample_feature[key].numel()
+                    break
+            else:
+                # fallback: try to find first tensor value
+                tensor_vals = [v for v in sample_feature.values() if isinstance(v, torch.Tensor)]
+                if tensor_vals:
+                    in_features = tensor_vals[0].numel()
+                else:
+                    raise ValueError("Loaded .pt is a dict but does not contain a tensor feature vector.")
+        else:
+            # Try to coerce other types (e.g., numpy arrays)
+            try:
+                import numpy as _np
+                if isinstance(sample_feature, _np.ndarray):
+                    in_features = sample_feature.size
+                else:
+                    raise ValueError("Unsupported feature file format for determining input dimension.")
+            except Exception:
+                raise ValueError("Unsupported feature file format for determining input dimension.")
+
         logger.info(f"Determined input feature dimension from sample: {in_features}")
-    except (StopIteration, FileNotFoundError):
+    except (StopIteration, FileNotFoundError) as e:
         raise FileNotFoundError(
-            f"No feature files found in {feature_dir}. "
-            "Please run the feature generation script first."
-        )
+            f"No feature files found in {getattr(base_dir, 'as_posix', lambda: base_dir)()}. Please run the feature generation script first."
+        ) from e
 
     num_classes = len(config.pathologies.columns)
 
@@ -266,7 +324,8 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         if use_amp and scaler is not None:
             # Determine the dtype for mixed precision.
             amp_dtype = torch.bfloat16 if use_bf16 and torch.cuda.is_bf16_supported() else torch.float16
-            with torch.cuda.amp.autocast(dtype=amp_dtype):
+            # Use the new torch.amp.autocast API (device_type argument) to avoid deprecation warnings.
+            with torch.amp.autocast(device_type='cuda', dtype=amp_dtype):
                 outputs = model(pixel_values)
                 loss = criterion(outputs, labels)
                 # Normalize loss for gradient accumulation.
@@ -493,15 +552,42 @@ def train_model(
         logger.info("Setting up feature-based data pipeline.")
         feature_dir = Path(config.workflow.feature_config.feature_dir)
 
+        # Determine whether to preload features into RAM (config option)
+        preload_flag = False
+        if hasattr(config, 'training') and hasattr(config.training, 'features_preload_to_ram'):
+            preload_flag = bool(config.training.features_preload_to_ram)
+        if preload_flag:
+            logger.info("Feature preloading enabled: feature tensors will be loaded into RAM at dataset init.")
+
+        # Support two layouts for feature storage:
+        # A) feature_dir/train/*.pt and feature_dir/valid/*.pt (preferred)
+        # B) feature_dir/*.pt (flattened) -> use same directory for both train and valid
+        train_sub = feature_dir / 'train'
+        valid_sub = feature_dir / 'valid'
+        if train_sub.exists() and valid_sub.exists():
+            train_feature_dir = train_sub
+            valid_feature_dir = valid_sub
+            logger.info("Using feature subfolders: 'train' and 'valid'.")
+        elif any(feature_dir.glob('*.pt')):
+            train_feature_dir = feature_dir
+            valid_feature_dir = feature_dir
+            logger.info("Using flattened feature directory for both train and valid.")
+        else:
+            raise FileNotFoundError(
+                f"Feature directory layout not recognised. Expected '{feature_dir}/train' and '{feature_dir}/valid' or .pt files at '{feature_dir}'."
+            )
+
         train_dataset = FeatureDataset(
             dataframe=train_df,
-            feature_dir=feature_dir / "train",
-            pathology_columns=config.pathologies.columns
+            feature_dir=train_feature_dir,
+            pathology_columns=config.pathologies.columns,
+            preload_to_ram=preload_flag
         )
         valid_dataset = FeatureDataset(
             dataframe=valid_df,
-            feature_dir=feature_dir / "valid",
-            pathology_columns=config.pathologies.columns
+            feature_dir=valid_feature_dir,
+            pathology_columns=config.pathologies.columns,
+            preload_to_ram=preload_flag
         )
 
         # In this mode, augmentations are not applicable as we are using static features.
@@ -642,7 +728,12 @@ def train_model(
     # Initialize GradScaler for mixed precision if enabled.
     scaler = None
     if config.optimization.mixed_precision:
-        scaler = torch.cuda.amp.GradScaler()
+        # Use the new torch.amp.GradScaler API when available to avoid deprecation warnings.
+        try:
+            scaler = torch.amp.GradScaler(device_type=device.type)
+        except Exception:
+            # Fallback for older torch versions
+            scaler = torch.cuda.amp.GradScaler()
 
     # Initialize training state variables.
     start_epoch = 0

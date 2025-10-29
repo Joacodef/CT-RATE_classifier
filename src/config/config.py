@@ -99,6 +99,9 @@ def load_config(config_path: str | Path) -> SimpleNamespace:
             cfg.paths.cache_dir = Path(cfg.paths.cache_dir).resolve()
         if hasattr(cfg.paths, 'output_dir'):
             cfg.paths.output_dir = Path(cfg.paths.output_dir).resolve()
+        if hasattr(cfg.paths, 'feature_dir'):
+            # Resolve the feature_dir to an absolute path
+            cfg.paths.feature_dir = Path(cfg.paths.feature_dir).resolve()
 
         if hasattr(cfg.paths, 'data_dir'):
             data_dir = Path(cfg.paths.data_dir).resolve()
