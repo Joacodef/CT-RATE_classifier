@@ -102,25 +102,25 @@ class TestObjectiveFunction:
         mock_trial.number = 0
         objective(mock_trial, mock_base_config, mock_args)
         called_config = mock_train_model.call_args[1]['config']
-        assert called_config.paths.train_subset_path.name == "train_05_percent.csv"
+        assert called_config.paths.data_subsets.train.name == "train_05_percent.csv"
 
         # Trial 6 should use 20% dataset (between 5 and 10)
         mock_trial.number = 6
         objective(mock_trial, mock_base_config, mock_args)
         called_config = mock_train_model.call_args[1]['config']
-        assert called_config.paths.train_subset_path.name == "train_20_percent.csv"
+        assert called_config.paths.data_subsets.train.name == "train_20_percent.csv"
 
         # Trial 12 should use 50% dataset (between 10 and 15)
         mock_trial.number = 12
         objective(mock_trial, mock_base_config, mock_args)
         called_config = mock_train_model.call_args[1]['config']
-        assert called_config.paths.train_subset_path.name == "train_50_percent.csv"
+        assert called_config.paths.data_subsets.train.name == "train_50_percent.csv"
 
         # Trial 16 should use full dataset (train_subset_path is None)
         mock_trial.number = 16
         objective(mock_trial, mock_base_config, mock_args)
         called_config = mock_train_model.call_args[1]['config']
-        assert called_config.paths.train_subset_path is None
+        assert called_config.paths.data_subsets.train.name == "train.csv"
 
     @patch('scripts.optimize_hyperparams.train_model')
     @patch('pathlib.Path.exists')

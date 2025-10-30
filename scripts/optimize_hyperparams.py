@@ -91,36 +91,57 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
     elif config.model.type == "mlp":
         # MLP models do not expose architectural variants in the current search space.
         model_suffix = "mlp"
+
+        # Tune core training hyperparameters specifically for the feature MLP.
+        config.training.learning_rate = trial.suggest_float(
+            "learning_rate", 5e-6, 5e-3, log=True
+        )
+        config.training.weight_decay = trial.suggest_float(
+            "weight_decay", 1e-7, 5e-2, log=True
+        )
+        config.training.batch_size = trial.suggest_categorical(
+            "batch_size", [64, 128, 256, 512]
+        )
+
+        num_hidden_layers = trial.suggest_int("mlp_num_hidden_layers", 1, 3)
+        hidden_layer_options = [
+            [256, 512, 768, 1024],
+            [128, 256, 512, 768],
+            [64, 128, 256, 512],
+        ]
+        hidden_dims: list[int] = []
+        dropout_rates: list[float] = []
+        for layer_idx in range(num_hidden_layers):
+            dim_choices = hidden_layer_options[min(layer_idx, len(hidden_layer_options) - 1)]
+            hidden_dim = trial.suggest_categorical(
+                f"mlp_hidden_dim_{layer_idx + 1}", dim_choices
+            )
+            hidden_dims.append(hidden_dim)
+            dropout_rate = trial.suggest_float(
+                f"mlp_dropout_{layer_idx + 1}", 0.1, 0.6
+            )
+            dropout_rates.append(dropout_rate)
+
+        config.model.hidden_dims = hidden_dims
+        config.model.dropout_probs = dropout_rates
+        config.model.num_hidden_layers = num_hidden_layers
     else:
         logger.warning(
             "Model type '%s' has no variant search configured; proceeding without variant tuning.",
             config.model.type,
         )
 
-    # Suggest the loss function type
-    """ loss_type = trial.suggest_categorical(
-        "loss_type", ["BCEWithLogitsLoss", "FocalLoss"]
-    )
-    config.loss_function.type = loss_type
-
-    if config.loss_function.type == "FocalLoss":
-        config.loss_function.focal_loss.alpha = trial.suggest_float(
-            "focal_loss_alpha", 0.1, 0.9
+    if config.model.type != "mlp":
+        config.training.learning_rate = trial.suggest_float(
+            "learning_rate", 1e-5, 1e-3, log=True
         )
-        config.loss_function.focal_loss.gamma = trial.suggest_float(
-            "focal_loss_gamma", 1.0, 5.0
+        config.training.weight_decay = trial.suggest_float(
+            "weight_decay", 1e-6, 1e-2, log=True
         )
-
-    config.training.learning_rate = trial.suggest_float(
-        "learning_rate", 1e-5, 1e-3, log=True
-    )
-    config.training.weight_decay = trial.suggest_float(
-        "weight_decay", 1e-6, 1e-2, log=True
-    )
-    config.training.batch_size = trial.suggest_categorical(
-        "batch_size", [1, 2, 4, 8]
-    )
-     """
+        config.training.batch_size = trial.suggest_categorical(
+            "batch_size", [1, 2, 4, 8]
+        )
+     
     # --- Trial-specific Configuration ---
     # Configure W&B for this trial, enabling grouped runs
     if hasattr(config, "wandb"):
