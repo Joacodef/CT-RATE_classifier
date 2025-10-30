@@ -194,43 +194,65 @@ class FeatureDataset(Dataset):
         self.pathology_columns = pathology_columns
         self.preload_to_ram = preload_to_ram
         self._features_ram = None
+        self._ram_name_to_index: Dict[str, int] | None = None
         if self.preload_to_ram:
-            self._features_ram = {}
-            # Use a progress bar to give feedback when preloading many features into RAM
-            for idx, row in tqdm(self.dataframe.iterrows(), total=len(self.dataframe), desc="Preloading features", unit="file"):
+            features_list: List[torch.Tensor] = []
+            name_to_index: Dict[str, int] = {}
+            # Preload once in the main process; tensors are moved to shared memory for worker reuse.
+            for idx, row in tqdm(
+                self.dataframe.iterrows(),
+                total=len(self.dataframe),
+                desc="Preloading features",
+                unit="file",
+            ):
                 volume_name = row['VolumeName']
-                def clean_name(name):
+
+                def clean_name(name: Any) -> str:
                     return str(name).replace('.nii.gz', '').replace('.nii', '')
+
                 clean_volume_name = clean_name(volume_name)
-                # Resolve possible feature filename variants to be tolerant of different test fixtures
                 candidates = [
                     self.feature_dir / f"{clean_volume_name}.pt",
                     self.feature_dir / f"{volume_name}.pt",
                     self.feature_dir / f"{volume_name}",
                 ]
-                loaded = False
-                for feature_path in candidates:
-                    if feature_path.exists():
-                        # Some feature files may contain tensors or dicts; load with weights_only=False for safety
-                        try:
-                            feat = torch.load(feature_path, weights_only=False)
-                        except Exception:
-                            feat = torch.load(feature_path)
-                        # If it's a dict with tensors, try to extract the tensor
-                        if isinstance(feat, dict):
-                            tensor_vals = [v for v in feat.values() if isinstance(v, torch.Tensor)]
-                            if tensor_vals:
-                                feat = tensor_vals[0]
-                        # If it's a MetaTensor-like object, try .tensor
-                        if hasattr(feat, 'tensor') and isinstance(getattr(feat, 'tensor'), torch.Tensor):
-                            feat = feat.tensor
-                        self._features_ram[clean_volume_name] = feat
-                        loaded = True
-                        break
-                if not loaded:
+                feature_path = next((path for path in candidates if path.exists()), None)
+                if feature_path is None:
                     raise FileNotFoundError(
                         f"Feature file not found for volume '{volume_name}'. Tried: {candidates}"
                     )
+
+                try:
+                    feat = torch.load(feature_path, weights_only=False)
+                except Exception:
+                    feat = torch.load(feature_path)
+
+                if isinstance(feat, dict):
+                    tensor_vals = [v for v in feat.values() if isinstance(v, torch.Tensor)]
+                    if tensor_vals:
+                        feat = tensor_vals[0]
+                if hasattr(feat, 'tensor') and isinstance(getattr(feat, 'tensor'), torch.Tensor):
+                    feat = feat.tensor
+
+                feat_tensor = torch.as_tensor(feat).float().flatten()
+                features_list.append(feat_tensor)
+                if clean_volume_name in name_to_index:
+                    raise ValueError(f"Duplicate volume name encountered during feature preload: {clean_volume_name}")
+                name_to_index[clean_volume_name] = idx
+
+            if features_list:
+                try:
+                    stacked = torch.stack(features_list).contiguous()
+                except RuntimeError as exc:
+                    raise RuntimeError(
+                        "Unable to stack preloaded feature tensors; ensure all feature vectors share the same shape."
+                    ) from exc
+                stacked.share_memory_()
+                self._features_ram = stacked
+                self._ram_name_to_index = name_to_index
+            else:
+                self._features_ram = torch.empty(0)
+                self._ram_name_to_index = {}
 
     def __len__(self) -> int:
         """Returns the total number of samples in the dataset."""
@@ -256,8 +278,10 @@ class FeatureDataset(Dataset):
             return str(name).replace('.nii.gz', '').replace('.nii', '')
         clean_volume_name = clean_name(volume_name)
 
-        if self.preload_to_ram and self._features_ram is not None:
-            feature_vector = self._features_ram[clean_volume_name]
+        if self.preload_to_ram and isinstance(self._features_ram, torch.Tensor):
+            if self._ram_name_to_index is None or clean_volume_name not in self._ram_name_to_index:
+                raise KeyError(f"Preloaded feature tensor missing entry for '{volume_name}'")
+            feature_vector = self._features_ram[self._ram_name_to_index[clean_volume_name]]
         else:
             # Try multiple filename variants to be robust to different callers/tests
             candidates = [

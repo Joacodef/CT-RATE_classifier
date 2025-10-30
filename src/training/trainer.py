@@ -71,6 +71,55 @@ from src.data.cache_utils import (
 )
 
 
+def generate_wandb_run_name(config: SimpleNamespace) -> str:
+    """Create a compact W&B run name using model variant, workflow mode, and dataset."""
+
+    def _sanitize_component(component: str, fallback: str) -> str:
+        if not component:
+            return fallback
+        sanitized = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '-' for ch in component)
+        sanitized = sanitized.strip('-_')
+        return sanitized or fallback
+
+    model_ns = getattr(config, 'model', SimpleNamespace())
+    model_type = _sanitize_component(str(getattr(model_ns, 'type', 'model')).upper(), 'MODEL')
+    model_variant = getattr(model_ns, 'variant', None)
+    if model_variant:
+        variant_part = _sanitize_component(str(model_variant).upper(), 'VAR')
+        model_part = f"{model_type}-{variant_part}"
+    else:
+        model_part = model_type
+
+    workflow_ns = getattr(config, 'workflow', SimpleNamespace())
+    workflow_mode = _sanitize_component(str(getattr(workflow_ns, 'mode', 'workflow')).lower(), 'workflow')
+
+    dataset_part = 'dataset'
+    try:
+        data_subsets = getattr(getattr(config, 'paths', SimpleNamespace()), 'data_subsets', SimpleNamespace())
+        train_subset = getattr(data_subsets, 'train', None)
+        if train_subset:
+            if not isinstance(train_subset, Path):
+                train_subset = Path(train_subset)
+            dataset_part = _sanitize_component(train_subset.stem.lower() or train_subset.name.lower(), 'dataset')
+    except Exception:
+        dataset_part = 'dataset'
+
+    signature_payload = {
+        'lr': getattr(getattr(config, 'training', SimpleNamespace()), 'learning_rate', None),
+        'batch': getattr(getattr(config, 'training', SimpleNamespace()), 'batch_size', None),
+        'augment': getattr(getattr(config, 'training', SimpleNamespace()), 'augment', None),
+        'cache': getattr(getattr(config, 'cache', SimpleNamespace()), 'use_cache', None),
+        'mp': getattr(getattr(config, 'optimization', SimpleNamespace()), 'mixed_precision', None),
+    }
+    try:
+        signature_raw = json.dumps(signature_payload, sort_keys=True, default=str).encode('utf-8')
+        signature_part = hashlib.sha1(signature_raw).hexdigest()[:4]
+    except Exception:
+        signature_part = 'custom'
+
+    return f"{model_part}_{workflow_mode}_{dataset_part}_{signature_part}"
+
+
 def create_model(config: SimpleNamespace) -> nn.Module:
     """Create and return the 3D model based on the provided configuration."""
 
@@ -477,11 +526,15 @@ def train_model(
                 "resume_from_checkpoint": str(config.training.resume_from_checkpoint) if config.training.resume_from_checkpoint else None,
             }
             # Initialize Weights & Biases run.
+            configured_run_name = getattr(config.wandb, 'run_name', None)
+            run_name = configured_run_name or generate_wandb_run_name(config)
+            if not configured_run_name:
+                logger.info(f"Generated W&B run name: {run_name}")
             wandb_run = wandb.init(
                 project=config.wandb.project,
                 config=wandb_config_payload,
                 dir=str(config.paths.output_dir),
-                name=getattr(config.wandb, 'run_name', None),
+                name=run_name,
                 group=getattr(config.wandb, 'group', None),
                 resume=getattr(config.wandb, 'resume', None),
                 reinit=True,  # Allow re-initialization for multiple trials in one script
@@ -723,7 +776,7 @@ def train_model(
 
     # Initialize training state variables.
     start_epoch = 0
-    best_f1 = 0.0
+    best_val_metric = 0.0
     history = {'train_loss': [], 'valid_loss': [], 'metrics': []}
     checkpoint_metrics_loaded = {}
 
@@ -736,7 +789,7 @@ def train_model(
                 config.training.resume_from_checkpoint, model, optimizer, scaler
             )
             start_epoch = checkpoint_epoch + 1  # Set start epoch for training loop.
-            best_f1 = checkpoint_metrics_loaded.get('f1_macro', 0.0) # Use F1 score from checkpoint
+            best_val_metric = checkpoint_metrics_loaded.get('roc_auc_macro', 0.0)
             
             # Load training history if available.
             history_path = Path(config.training.resume_from_checkpoint).parent / 'training_history.json'
@@ -749,14 +802,14 @@ def train_model(
                 history['metrics'] = history['metrics'][:start_epoch]
 
             logger.info(f"Resumed from epoch {start_epoch}")
-            # Reports the best F1-score found in the loaded checkpoint.
-            logger.info(f"Best F1-score from loaded checkpoint: {best_f1:.4f}")
+            # Reports the best ROC AUC (macro) from the loaded checkpoint.
+            logger.info(f"Best ROC AUC (macro) from loaded checkpoint: {best_val_metric:.4f}")
         except Exception as e:
             # Handle errors during checkpoint loading.
             logger.error(f"Error loading checkpoint: {e}", exc_info=True)
             logger.info("Starting training from scratch")
             start_epoch = 0
-            best_f1 = 0.0
+            best_val_metric = 0.0
             history = {'train_loss': [], 'valid_loss': [], 'metrics': []}
 
 
@@ -772,8 +825,8 @@ def train_model(
     # Initialize early stopping mechanism.
     early_stopping = EarlyStopping(patience=config.training.early_stopping_patience, mode='max', min_delta=0.0001)
     # Set best_value for early stopping if resuming.
-    if start_epoch > 0 and best_f1 > 0:
-        early_stopping.best_value = best_f1
+    if start_epoch > 0 and best_val_metric > 0:
+        early_stopping.best_value = best_val_metric
 
     logger.info(f"Starting training from epoch {start_epoch + 1}...")
 
@@ -829,15 +882,15 @@ def train_model(
         with open(history_path, 'w') as f: json.dump(history, f, indent=2)
 
         # Check for best model based on validation ROC AUC macro.
-        current_f1 = metrics_for_loop.get('f1_macro', 0.0)
-        if current_f1 > best_f1:
-            best_f1 = current_f1
+        current_metric = metrics_for_loop.get('roc_auc_macro', 0.0)
+        if current_metric > best_val_metric:
+            best_val_metric = current_metric
             best_model_path = output_dir / 'best_model.pth'
             save_checkpoint(model, optimizer, scaler, epoch, metrics_for_loop, best_model_path)
-            logger.info(f"New best model saved with F1-score: {best_f1:.4f}")
+            logger.info(f"New best model saved with ROC AUC (macro): {best_val_metric:.4f}")
         
         # Check for early stopping.
-        if early_stopping(current_f1):
+        if early_stopping(current_metric):
             logger.info(f"Early stopping triggered at epoch {epoch+1}")
             break  # Exit training loop.
             
@@ -866,9 +919,11 @@ def train_model(
 
     logger.info(f"\nTraining completed!")
     if history['metrics']:
-        best_epoch_idx = np.argmax([m.get('f1_macro', 0.0) for m in history['metrics']])
-        best_f1_final = history['metrics'][best_epoch_idx].get('f1_macro', 0.0)
-        logger.info(f"Best model: Epoch {history.get('metrics')[best_epoch_idx].get('epoch', best_epoch_idx)+1} with F1-score {best_f1_final:.4f}")
+        best_epoch_idx = np.argmax([m.get('roc_auc_macro', 0.0) for m in history['metrics']])
+        best_auc_final = history['metrics'][best_epoch_idx].get('roc_auc_macro', 0.0)
+        logger.info(
+            f"Best model: Epoch {history.get('metrics')[best_epoch_idx].get('epoch', best_epoch_idx)+1} with ROC AUC (macro) {best_auc_final:.4f}"
+        )
         generate_final_report(history, config, best_epoch_idx=best_epoch_idx)
     else:
         logger.warning("Training history is empty. Skipping final report generation.")

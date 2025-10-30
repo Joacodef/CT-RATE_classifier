@@ -47,8 +47,6 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
 
     # Set path to subset file if it exists for the current stage.
     # The trainer will use this path to filter the main training data.
-    config.paths.train_subset_path = None  # Initialize to None
-
     # Fallback to full dataset if subset files do not exist
     if not all(
         [path_train_05.exists(), path_train_20.exists(), path_train_50.exists()]
@@ -58,17 +56,17 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
         )
     else:
         if trial_num < args.trials_on_5_percent:
-            config.paths.train_subset_path = path_train_05
+            config.paths.data_subsets.train = path_train_05
             logger.info(
                 f"Using 5% training subset for trial {trial_num}: {path_train_05}"
             )
         elif trial_num < args.trials_on_20_percent:
-            config.paths.train_subset_path = path_train_20
+            config.paths.data_subsets.train = path_train_20
             logger.info(
                 f"Using 20% training subset for trial {trial_num}: {path_train_20}"
             )
         elif trial_num < args.trials_on_50_percent:
-            config.paths.train_subset_path = path_train_50
+            config.paths.data_subsets.train = path_train_50
             logger.info(
                 f"Using 50% training subset for trial {trial_num}: {path_train_50}"
             )
@@ -77,18 +75,30 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
                 f"Using full training data for trial {trial_num}."
             )
 
+    model_suffix = None
     if config.model.type == "resnet3d":
         variant = trial.suggest_categorical("resnet3d_variant", ["18", "34"])
         config.model.variant = variant
+        model_suffix = f"resnet{variant}"
     elif config.model.type == "densenet3d":
         variant = trial.suggest_categorical("densenet3d_variant", ["121", "169"])
         config.model.variant = variant
-    else:  # vit3d
+        model_suffix = f"densenet{variant}"
+    elif config.model.type == "vit3d":
         variant = trial.suggest_categorical("vit3d_variant", ["tiny", "small", "base"])
         config.model.variant = variant
+        model_suffix = f"vit-{variant}"
+    elif config.model.type == "mlp":
+        # MLP models do not expose architectural variants in the current search space.
+        model_suffix = "mlp"
+    else:
+        logger.warning(
+            "Model type '%s' has no variant search configured; proceeding without variant tuning.",
+            config.model.type,
+        )
 
     # Suggest the loss function type
-    loss_type = trial.suggest_categorical(
+    """ loss_type = trial.suggest_categorical(
         "loss_type", ["BCEWithLogitsLoss", "FocalLoss"]
     )
     config.loss_function.type = loss_type
@@ -110,7 +120,7 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
     config.training.batch_size = trial.suggest_categorical(
         "batch_size", [1, 2, 4, 8]
     )
-    
+     """
     # --- Trial-specific Configuration ---
     # Configure W&B for this trial, enabling grouped runs
     if hasattr(config, "wandb"):
@@ -119,12 +129,8 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
         
         # Create a unique, informative name for the W&B run
         run_name = f"trial_{trial_num}"
-        if "resnet3d_variant" in trial.params:
-            run_name += f"_resnet{trial.params['resnet3d_variant']}"
-        elif "densenet3d_variant" in trial.params:
-            run_name += f"_densenet{trial.params['densenet3d_variant']}"
-        elif "vit3d_variant" in trial.params:
-            run_name += f"_vit-{trial.params['vit3d_variant']}"
+        if model_suffix:
+            run_name += f"_{model_suffix}"
         
         config.wandb.run_name = run_name
         config.wandb.resume = "allow"
@@ -278,7 +284,7 @@ def main():
         logger.info("Using MedianPruner.")
     elif args.pruner == "hyperband":
         pruner = optuna.pruners.HyperbandPruner(
-            min_resource=1, max_resource=base_config.training.epochs, reduction_factor=3
+            min_resource=1, max_resource=base_config.training.num_epochs, reduction_factor=3
         )
         logger.info("Using HyperbandPruner.")
     else:
