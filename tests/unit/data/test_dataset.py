@@ -233,3 +233,70 @@ class TestFeatureDataset:
         
         # Assert that the volume name is correct
         assert item["volume_name"] == mock_feature_data["dataframe"].iloc[0]['VolumeName']
+
+    def test_preload_to_ram_stacks_and_serves_from_memory(self, mock_feature_data):
+        """Ensures the preload path stacks tensors once and reuses shared memory."""
+        dataset = FeatureDataset(
+            dataframe=mock_feature_data["dataframe"],
+            feature_dir=mock_feature_data["feature_dir"],
+            pathology_columns=mock_feature_data["pathology_columns"],
+            preload_to_ram=True,
+        )
+
+        assert dataset._features_ram is not None
+        assert dataset._features_ram.shape == (
+            len(mock_feature_data["dataframe"]), mock_feature_data["feature_dim"]
+        )
+        clean_name = mock_feature_data["dataframe"].iloc[0]["VolumeName"].replace(".nii.gz", "").replace(".nii", "")
+        assert dataset._ram_name_to_index is not None
+        assert clean_name in dataset._ram_name_to_index
+
+        item = dataset[0]
+        expected = dataset._features_ram[dataset._ram_name_to_index[clean_name]]
+        assert item["image"].data_ptr() == expected.data_ptr()
+        assert torch.equal(item["image"], expected)
+
+    def test_preload_to_ram_duplicate_volume_raises(self, tmp_path: Path, pathology_columns: list[str]):
+        """Duplicate clean volume names should fail fast when preloading."""
+        dataframe = pd.DataFrame(
+            {
+                "VolumeName": ["dup_case.nii.gz", "dup_case.nii"],
+                pathology_columns[0]: [1, 0],
+                pathology_columns[1]: [0, 1],
+            }
+        )
+        feature_dir = tmp_path / "features"
+        feature_dir.mkdir()
+        torch.save(torch.randn(16), feature_dir / "dup_case.pt")
+
+        with pytest.raises(ValueError, match="Duplicate volume name"):
+            FeatureDataset(
+                dataframe=dataframe,
+                feature_dir=feature_dir,
+                pathology_columns=pathology_columns,
+                preload_to_ram=True,
+            )
+
+    def test_getitem_falls_back_to_volume_name_without_pt_extension(self, tmp_path: Path, pathology_columns: list[str]):
+        """Dataset should resolve feature files saved without an added .pt suffix."""
+        dataframe = pd.DataFrame(
+            {
+                "VolumeName": ["no_ext_case.nii.gz"],
+                pathology_columns[0]: [1],
+                pathology_columns[1]: [0],
+            }
+        )
+        feature_dir = tmp_path / "features"
+        feature_dir.mkdir()
+        feature_tensor = torch.randn(32)
+        torch.save(feature_tensor, feature_dir / dataframe.iloc[0]["VolumeName"])
+
+        dataset = FeatureDataset(
+            dataframe=dataframe,
+            feature_dir=feature_dir,
+            pathology_columns=pathology_columns,
+        )
+
+        item = dataset[0]
+        assert torch.equal(item["image"], feature_tensor)
+        assert item["volume_name"] == dataframe.iloc[0]["VolumeName"]

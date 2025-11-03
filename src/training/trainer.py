@@ -42,6 +42,7 @@ from src.models.resnet3d import resnet18_3d, resnet34_3d
 from src.models.densenet3d import densenet121_3d, densenet169_3d, densenet201_3d, densenet161_3d
 from src.models.vit3d import vit_tiny_3d, vit_small_3d, vit_base_3d, vit_large_3d
 from src.models.mlp import create_mlp_classifier
+from src.models.logistic import create_logistic_classifier
 
 # Internal imports - data
 from src.data.dataset import CTMetadataDataset, ApplyTransforms, LabelAttacherDataset, FeatureDataset
@@ -565,9 +566,12 @@ def train_model(
 
     logger.info(f"Workflow mode raw: '{workflow_mode}', feature_dir: {feature_dir_configured}")
 
-    if model_type == 'mlp' and workflow_mode != 'feature-based':
+    feature_model_types = {'mlp', 'logistic', 'logistic_regression'}
+
+    if model_type in feature_model_types and workflow_mode != 'feature-based':
         logger.warning(
-            "MLP model requires feature-based workflow. Switching workflow.mode to 'feature-based' automatically."
+            "%s model requires feature-based workflow. Switching workflow.mode to 'feature-based' automatically.",
+            model_type.upper()
         )
         workflow_mode = 'feature-based'
         config.workflow.mode = 'feature-based'
@@ -579,10 +583,15 @@ def train_model(
             "Feature-based workflow requires 'workflow.feature_config.feature_dir' to be configured."
         )
 
-    if workflow_mode == 'feature-based' and model_type != 'mlp':
-        raise ValueError("Feature-based workflow requires the 'mlp' model. Please update config.model.type accordingly.")
-    if workflow_mode != 'feature-based' and model_type == 'mlp':
-        raise ValueError("MLP model is only supported in feature-based workflow. Please switch workflow.mode to 'feature-based'.")
+    if workflow_mode == 'feature-based' and model_type not in feature_model_types:
+        valid_names = ', '.join(sorted(feature_model_types))
+        raise ValueError(
+            f"Feature-based workflow requires one of the feature classifiers ({valid_names}). Please update config.model.type accordingly."
+        )
+    if workflow_mode != 'feature-based' and model_type in feature_model_types:
+        raise ValueError(
+            f"{config.model.type} model is only supported in feature-based workflow. Please switch workflow.mode to 'feature-based'."
+        )
 
     if workflow_mode == 'feature-based':
         # --- Feature-Based Workflow ---
@@ -727,6 +736,8 @@ def train_model(
 
     if model_type == 'mlp':
         model = create_mlp_classifier(config).to(device)
+    elif model_type in {'logistic', 'logistic_regression'}:
+        model = create_logistic_classifier(config).to(device)
     else:
         model = create_model(config).to(device)
         

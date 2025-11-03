@@ -6,6 +6,7 @@ data preparation, and the main training orchestration logic.
 """
 
 import sys
+import math
 import pytest
 import torch
 import torch.nn as nn
@@ -14,16 +15,22 @@ import numpy as np
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, call, ANY
+from torch.utils.data import DataLoader, Dataset
 
 # Add project root to Python path
 project_root = Path(__file__).resolve().parents[3]
 sys.path.append(str(project_root))
 
+import src.training.trainer as trainer_module
+
 from src.training.trainer import (
     create_model,
+    generate_wandb_run_name,
     load_and_prepare_data,
     train_model,
-    worker_init_fn 
+    train_epoch,
+    validate_epoch,
+    worker_init_fn
 )
 from src.data.cache_utils import deterministic_hash
 from src.models.resnet3d import resnet18_3d
@@ -311,3 +318,291 @@ class TestTrainModel:
                worker_init_fn=worker_init_fn
            )
        ], any_order=False)
+
+
+class _ToyBatchDataset(Dataset):
+    """Deterministic toy dataset yielding small regression batches."""
+
+    def __init__(self, num_samples: int, feature_dim: int):
+        self.num_samples = num_samples
+        self.feature_dim = feature_dim
+
+    def __len__(self) -> int:  # pragma: no cover - thin wrapper
+        return self.num_samples
+
+    def __getitem__(self, idx: int) -> dict:
+        image = torch.full((self.feature_dim,), float(idx + 1) / 100.0)
+        label = torch.tensor([(idx % 2)], dtype=torch.float32)
+        return {"image": image, "label": label}
+
+
+class _CountingSGD(torch.optim.SGD):
+    """SGD optimizer that records how many step calls occur."""
+
+    def __init__(self, params, lr: float):
+        super().__init__(params, lr=lr)
+        self.step_calls = 0
+
+    def step(self, closure=None):
+        self.step_calls += 1
+        return super().step(closure)
+
+
+class _DummyScaler:
+    """Minimal GradScaler stand-in for exercising AMP branches."""
+
+    def __init__(self):
+        self.scale_calls = 0
+        self.step_calls = 0
+        self.update_calls = 0
+
+    def scale(self, loss):
+        self.scale_calls += 1
+
+        class _ScaledLoss:
+            def __init__(self_inner, wrapped_loss):
+                self_inner.loss = wrapped_loss
+
+            def backward(self_inner):
+                self_inner.loss.backward()
+
+        return _ScaledLoss(loss)
+
+    def step(self, optimizer):
+        self.step_calls += 1
+        optimizer.step()
+
+    def update(self):
+        self.update_calls += 1
+
+
+class _SimpleLoader:
+    """Lightweight iterable mimicking a PyTorch DataLoader."""
+
+    def __init__(self, batches: list[dict]):
+        self._batches = batches
+
+    def __iter__(self):  # pragma: no cover - simple generator
+        for batch in self._batches:
+            yield batch
+
+    def __len__(self) -> int:  # pragma: no cover - trivial
+        return len(self._batches)
+
+
+class _SequentialLogitModel(nn.Module):
+    """Model stub that yields a predefined sequence of logits per forward."""
+
+    def __init__(self, logits_per_batch: list[torch.Tensor]):
+        super().__init__()
+        self.logits_per_batch = logits_per_batch
+        self.call_index = 0
+
+    def forward(self, _inputs):  # pragma: no cover - trivial mapping
+        logits = self.logits_per_batch[self.call_index]
+        self.call_index += 1
+        return logits
+
+
+class TestTrainEpoch:
+    """Exercises gradient accumulation and AMP execution paths."""
+
+    def _build_dataloader(self, num_samples: int = 6, batch_size: int = 2, feature_dim: int = 3):
+        dataset = _ToyBatchDataset(num_samples=num_samples, feature_dim=feature_dim)
+        return DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+    def test_gradient_accumulation_respects_step_schedule(self):
+        dataloader = self._build_dataloader(num_samples=6, batch_size=2, feature_dim=3)
+        device = torch.device('cpu')
+        model = nn.Linear(3, 1)
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = _CountingSGD(model.parameters(), lr=0.1)
+
+        grad_steps = 2
+
+        avg_loss = train_epoch(
+            model=model,
+            dataloader=dataloader,
+            criterion=criterion,
+            optimizer=optimizer,
+            scaler=None,
+            device=device,
+            epoch=0,
+            total_epochs=1,
+            gradient_accumulation_steps=grad_steps,
+            use_amp=False,
+            use_bf16=False,
+        )
+
+        num_batches = len(dataloader)
+        expected_steps = math.ceil(num_batches / grad_steps)
+        assert optimizer.step_calls == expected_steps
+        assert isinstance(avg_loss, float)
+
+    @pytest.mark.parametrize("use_bf16,expected_dtype", [
+        (False, torch.float16),
+        (True, torch.bfloat16),
+    ])
+    def test_autocast_uses_expected_dtype(self, use_bf16, expected_dtype):
+        dataloader = self._build_dataloader(num_samples=4, batch_size=2, feature_dim=3)
+        device = torch.device('cpu')
+        model = nn.Linear(3, 1)
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = _CountingSGD(model.parameters(), lr=0.1)
+        scaler = _DummyScaler()
+
+        class _AutocastRecorder:
+            calls = []
+
+            def __init__(self, *args, **kwargs):
+                self.kwargs = kwargs
+
+            def __enter__(self):
+                _AutocastRecorder.calls.append(self.kwargs)
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+        _AutocastRecorder.calls.clear()
+
+        with patch('src.training.trainer.torch.cuda.is_bf16_supported', return_value=True), \
+             patch('src.training.trainer.torch.amp.autocast', new=_AutocastRecorder):
+            train_epoch(
+                model=model,
+                dataloader=dataloader,
+                criterion=criterion,
+                optimizer=optimizer,
+                scaler=scaler,
+                device=device,
+                epoch=0,
+                total_epochs=1,
+                gradient_accumulation_steps=1,
+                use_amp=True,
+                use_bf16=use_bf16,
+            )
+
+        assert optimizer.step_calls == len(dataloader)
+        assert scaler.scale_calls == len(dataloader)
+        assert scaler.step_calls == len(dataloader)
+        assert scaler.update_calls == len(dataloader)
+        assert len(_AutocastRecorder.calls) == len(dataloader)
+        for call_kwargs in _AutocastRecorder.calls:
+            assert call_kwargs['device_type'] == 'cuda'
+            assert call_kwargs['dtype'] == expected_dtype
+
+
+class TestValidateEpoch:
+    """Validates metric computation and lifecycle management."""
+
+    _PATHOLOGIES = ["Cardiomegaly", "Atelectasis"]
+
+    def _build_batches_and_logits(self):
+        labels_batch1 = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        labels_batch2 = torch.tensor([[1.0, 1.0], [0.0, 0.0]], dtype=torch.float32)
+
+        logits_batch1 = torch.tensor([[20.0, -20.0], [-20.0, 20.0]], dtype=torch.float32)
+        logits_batch2 = torch.tensor([[20.0, 20.0], [-20.0, -20.0]], dtype=torch.float32)
+
+        image_shape = (labels_batch1.size(0), 1, 2, 2, 2)
+        batches = [
+            {"image": torch.zeros(image_shape, dtype=torch.float32), "label": labels_batch1},
+            {"image": torch.zeros(image_shape, dtype=torch.float32), "label": labels_batch2},
+        ]
+        logits = [logits_batch1, logits_batch2]
+        return batches, logits
+
+    def test_metrics_are_perfect_for_matching_logits(self):
+        batches, logits = self._build_batches_and_logits()
+        loader = _SimpleLoader(batches)
+        model = _SequentialLogitModel([logit.clone() for logit in logits])
+        criterion = nn.BCEWithLogitsLoss()
+        device = torch.device('cpu')
+
+        avg_loss, metrics_dict = validate_epoch(model, loader, criterion, device, self._PATHOLOGIES)
+
+        assert avg_loss == pytest.approx(0.0, abs=1e-5)
+
+        expected_keys = {'roc_auc_macro', 'roc_auc_micro', 'f1_macro', 'f1_micro'}
+        expected_keys.update(f"{name}_auc" for name in self._PATHOLOGIES)
+        assert expected_keys.issubset(metrics_dict.keys())
+
+        assert metrics_dict['roc_auc_macro'] == pytest.approx(1.0)
+        assert metrics_dict['roc_auc_micro'] == pytest.approx(1.0)
+        assert metrics_dict['f1_macro'] == pytest.approx(1.0)
+        assert metrics_dict['f1_micro'] == pytest.approx(1.0)
+        for pathology in self._PATHOLOGIES:
+            assert metrics_dict[f"{pathology}_auc"] == pytest.approx(1.0)
+
+    def test_metric_objects_are_reset(self):
+        batches, logits = self._build_batches_and_logits()
+        loader = _SimpleLoader(batches)
+        criterion = nn.BCEWithLogitsLoss()
+        device = torch.device('cpu')
+
+        with patch.object(trainer_module.ROCAUCMetric, "reset", autospec=True) as mock_auc_reset, \
+             patch.object(trainer_module.FBetaScore, "reset", autospec=True) as mock_f1_reset:
+            model = _SequentialLogitModel([logit.clone() for logit in logits])
+            validate_epoch(model, loader, criterion, device, self._PATHOLOGIES)
+            first_auc_resets = mock_auc_reset.call_count
+            first_f1_resets = mock_f1_reset.call_count
+
+            model_second = _SequentialLogitModel([logit.clone() for logit in logits])
+            validate_epoch(model_second, loader, criterion, device, self._PATHOLOGIES)
+
+        assert first_auc_resets >= 1
+        assert mock_auc_reset.call_count - first_auc_resets >= 1
+        assert first_f1_resets >= 1
+        assert mock_f1_reset.call_count - first_f1_resets >= 1
+
+
+class TestGenerateWandbRunName:
+    """Validates W&B run name generation logic."""
+
+    def _base_config(self):
+        return SimpleNamespace(
+            model=SimpleNamespace(type="resnet3d", variant="18"),
+            workflow=SimpleNamespace(mode="end-to-end"),
+            paths=SimpleNamespace(
+                data_subsets=SimpleNamespace(train="/data/splits/train_fold_0.csv"),
+            ),
+            training=SimpleNamespace(learning_rate=1e-4, batch_size=2, augment=True),
+            cache=SimpleNamespace(use_cache=True),
+            optimization=SimpleNamespace(mixed_precision=False),
+        )
+
+    def test_sanitization_and_fallbacks(self):
+        config = self._base_config()
+        config.model.type = "ViT 3D"
+        config.model.variant = "small@beta"
+        config.workflow.mode = "Feat*Mode"
+        config.paths.data_subsets.train = "/path/to/data/train_split (set).csv"
+
+        name = generate_wandb_run_name(config)
+
+        assert "VIT-3D" in name
+        assert "SMALL-BETA" in name
+        assert "feat-mode" in name
+        assert "train_split--set" in name
+        assert name.startswith("VIT-3D-SMALL-BETA_feat-mode_train_split--set_")
+        signature_part = name.split("_")[-1]
+        assert len(signature_part) == 4
+
+    def test_signature_hash_changes_with_payload(self):
+        config = self._base_config()
+        name_a = generate_wandb_run_name(config)
+
+        config.training.learning_rate = 5e-5
+        name_b = generate_wandb_run_name(config)
+
+        config.training.learning_rate = 1e-4
+        config.training.batch_size = 4
+        name_c = generate_wandb_run_name(config)
+
+        hash_a = name_a.split("_")[-1]
+        hash_b = name_b.split("_")[-1]
+        hash_c = name_c.split("_")[-1]
+
+        assert hash_a != hash_b
+        assert hash_a != hash_c
+        assert hash_b != hash_c

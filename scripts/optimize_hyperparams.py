@@ -75,20 +75,25 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
                 f"Using full training data for trial {trial_num}."
             )
 
+    model_type = str(getattr(config.model, "type", "resnet3d")).lower()
+    config.model.type = model_type
+
+    feature_model_types = {"mlp", "logistic", "logistic_regression"}
+
     model_suffix = None
-    if config.model.type == "resnet3d":
+    if model_type == "resnet3d":
         variant = trial.suggest_categorical("resnet3d_variant", ["18", "34"])
         config.model.variant = variant
         model_suffix = f"resnet{variant}"
-    elif config.model.type == "densenet3d":
+    elif model_type == "densenet3d":
         variant = trial.suggest_categorical("densenet3d_variant", ["121", "169"])
         config.model.variant = variant
         model_suffix = f"densenet{variant}"
-    elif config.model.type == "vit3d":
+    elif model_type == "vit3d":
         variant = trial.suggest_categorical("vit3d_variant", ["tiny", "small", "base"])
         config.model.variant = variant
         model_suffix = f"vit-{variant}"
-    elif config.model.type == "mlp":
+    elif model_type == "mlp":
         # MLP models do not expose architectural variants in the current search space.
         model_suffix = "mlp"
 
@@ -125,13 +130,25 @@ def objective(trial: optuna.Trial, base_config, args: argparse.Namespace) -> flo
         config.model.hidden_dims = hidden_dims
         config.model.dropout_probs = dropout_rates
         config.model.num_hidden_layers = num_hidden_layers
+    elif model_type in {"logistic", "logistic_regression"}:
+        model_suffix = "logistic"
+
+        config.training.learning_rate = trial.suggest_float(
+            "learning_rate", 5e-6, 5e-3, log=True
+        )
+        config.training.weight_decay = trial.suggest_float(
+            "weight_decay", 1e-7, 1e-2, log=True
+        )
+        config.training.batch_size = trial.suggest_categorical(
+            "batch_size", [64, 128, 256, 512]
+        )
     else:
         logger.warning(
             "Model type '%s' has no variant search configured; proceeding without variant tuning.",
-            config.model.type,
+            model_type,
         )
 
-    if config.model.type != "mlp":
+    if model_type not in feature_model_types:
         config.training.learning_rate = trial.suggest_float(
             "learning_rate", 1e-5, 1e-3, log=True
         )
