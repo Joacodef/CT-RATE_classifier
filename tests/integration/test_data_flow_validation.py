@@ -57,7 +57,7 @@ def setup_test_environment(tmp_path):
         # Save the file inside its nested subdirectory
         nib.save(dummy_nifti_img, volume_dir / vol_name)
 
-    pd.DataFrame({"VolumeName": train_vols}).to_csv(splits_dir / "train_fold_0.csv", index=False)
+    pd.DataFrame({"VolumeName": train_vols}).to_csv(splits_dir / "train.csv", index=False)
     labels_df = pd.DataFrame({
         "VolumeName": train_vols,
         "Cardiomegaly": [1, 0], "Atelectasis": [0, 1]
@@ -84,7 +84,7 @@ def generate_test_config(setup_test_environment, monkeypatch):
             'base_project_dir': '${BASE_PROJECT_DIR}',
             'data_dir': '${DATA_DIR}',
             'dir_structure': 'nested',
-            'data_subsets': {'train': 'splits/train_fold_0.csv'},
+            'data_subsets': {'train': 'splits/train.csv'},
             'labels': {'all': 'labels/all_predicted_labels.csv'},
             'output_dir': str(root_dir / "output")
         },

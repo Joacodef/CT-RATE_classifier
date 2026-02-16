@@ -4,10 +4,10 @@ This directory contains the high-level, executable scripts that drive the machin
 
 The recommended workflow is:
 
-1.  **Prepare Data**: Use the scripts in `data_preparation/` to download, filter, and create k-fold splits of your dataset.
+1.  **Prepare Data**: Use the scripts in `data_preparation/` to download, filter, and prepare fixed train/valid splits.
 2.  **Generate Cache**: Run `cache_management/generate_cache.py` to pre-process and cache the dataset.
 3.  **Optimize Hyperparameters**: Optionally, run `optimize_hyperparams.py` on data subsets to find optimal settings.
-4.  **Train Model**: Use `train.py` to train a model on a specific data fold.
+4.  **Train Model**: Use `train.py` to train a model using the configured data split.
 5.  **Run Inference**: Use `inference.py` with a trained model to make predictions on new data.
 
 -----
@@ -28,20 +28,18 @@ This directory holds utilities for creating and managing the MONAI `PersistentDa
 
 ### `train.py`
 
-This script runs the training pipeline for a specific cross-validation fold. It loads a base configuration file and can be customized with command-line arguments to specify the fold, override model architecture, or resume from a checkpoint. The script dynamically adjusts the data paths and output directory for the selected fold.
+This script runs the training pipeline. It loads a base configuration file and can be customized with command-line arguments to override model architecture, workflow mode, or resume from a checkpoint.
 
 **Usage:**
 
 ```bash
-# Train on fold 0 using the settings in config.yaml
+# Train using the split paths defined in config.yaml
 python scripts/train.py \
-    --config configs/config.yaml \
-    --fold 0
+    --config configs/config.yaml
 
-# Resume training automatically from the last checkpoint for fold 1
+# Resume training automatically from the last checkpoint
 python scripts/train.py \
     --config configs/config.yaml \
-    --fold 1 \
     --resume
 ```
 
@@ -54,15 +52,15 @@ This script runs inference on CT volumes using a trained model and a consistent 
 ```bash
 # Run inference on a single volume
 python scripts/inference.py \
-    --config output/fold_0/config.yaml \
-    --model output/fold_0/best_model.pth \
+    --config /path/to/output/from_training/config.yaml \
+    --model /path/to/output/from_training/best_model.pth \
     --input /path/to/volume.nii.gz \
     --output /path/to/results
 
 # Run inference on a directory of volumes
 python scripts/inference.py \
-    --config output/fold_0/config.yaml \
-    --model output/fold_0/best_model.pth \
+    --config /path/to/output/from_training/config.yaml \
+    --model /path/to/output/from_training/best_model.pth \
     --input /path/to/volume_directory/ \
     --output /path/to/batch_results
 ```

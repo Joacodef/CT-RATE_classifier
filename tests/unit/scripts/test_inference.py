@@ -18,7 +18,7 @@ from scripts.inference import CTInference
 @pytest.fixture
 def base_config():
     return SimpleNamespace(
-        model=SimpleNamespace(type="mlp", variant="tiny"),
+        model=SimpleNamespace(type="resnet3d", variant="18"),
         optimization=SimpleNamespace(gradient_checkpointing=True),
         image_processing=SimpleNamespace(
             orientation_axcodes=("L", "P", "S"),

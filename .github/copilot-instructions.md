@@ -4,7 +4,7 @@ This file contains concise, actionable guidance for AI coding agents working on 
 
 ## Big picture (what this repo does)
 
-- End-to-end and feature-based training pipelines for multi-label pathology classification on 3D CT volumes.
+- End-to-end training pipeline for multi-label pathology classification on 3D CT volumes.
 - Preprocessing and caching use MONAI; training uses PyTorch; hyperparameter search uses Optuna; optional experiment logging with Weights & Biases (`wandb`).
 - Main entry points: `scripts/train.py`, `scripts/inference.py`, `scripts/optimize_hyperparams.py`.
 
@@ -12,7 +12,7 @@ This file contains concise, actionable guidance for AI coding agents working on 
 
 - `src/config/config.py` — YAML loader: substitutes `${ENV}` vars from `.env`, resolves paths into `Path` objects, and converts to `SimpleNamespace`.
 - `configs/config.yaml` and `configs/config_example.yaml` — canonical experiment settings (model type, image_processing, cache, paths, pathologies list).
-- `scripts/train.py` — CLI flags: `--config`, `--fold`, `--resume`, `--model-type`, `--model-variant` and how fold-specific paths are derived.
+- `scripts/train.py` — CLI flags: `--config`, `--resume`, `--model-type`, `--model-variant`, `--workflow` and how run directories are derived.
 - `scripts/inference.py` — CLI flags: `--config`, `--model`, `--input`, `--output`, `--device`, and the MONAI pipeline used for inference.
 - `scripts/optimize_hyperparams.py` — Optuna staged optimization and how subset CSVs are selected for early trials.
 - `src/training/trainer.py` — Core orchestration: caching strategy, DataLoader settings, model creation (`create_model`), loss selection, wandb init, and training loop.
@@ -25,7 +25,7 @@ This file contains concise, actionable guidance for AI coding agents working on 
 - Directory structure modes: `paths.dir_structure` supports `nested` and `flat` — `CTMetadataDataset` uses this to compute file paths (see `src/data/utils.py`).
 - Model options: `model.type` ∈ {`resnet3d`, `densenet3d`, `vit3d`} with `model.variant` controlling sizes (e.g., `tiny`, `small`, `base`, or numeric variants like `121`).
 - Loss: `loss_function.type` chooses between `FocalLoss` and `BCEWithLogitsLoss`. For BCE, positive class weights are computed automatically from the training dataframe in `trainer.py`.
-- Resume semantics: `--resume` without path finds the latest checkpoint in `config.paths.output_dir` (which `--fold` may override to `.../fold_X`). Passing `--resume <path>` uses that file.
+- Resume semantics: `--resume` without path finds the latest checkpoint in the split-specific output directory derived from `config.paths.data_subsets.train`. Passing `--resume <path>` uses that file.
 - HPO staged optimization: the Optuna script expects subset CSVs in the splits dir (`train_05_percent.csv`, `train_20_percent.csv`, `train_50_percent.csv`). If absent, optimization falls back to full data.
 
 ## Common developer workflows (examples)
@@ -36,14 +36,14 @@ All commands assume repository root. Example PowerShell usage:
 # Run unit & integration tests
 pytest .\tests\
 
-# Train (fold 0) using a config
-python scripts\train.py --config configs\config.yaml --fold 0
+# Train using configured split files
+python scripts\train.py --config configs\config.yaml
 
-# Resume training using latest checkpoint in the fold output dir
-python scripts\train.py --config configs\config.yaml --fold 0 --resume
+# Resume training using latest checkpoint
+python scripts\train.py --config configs\config.yaml --resume
 
 # Run inference on a directory
-python scripts\inference.py --config configs\config.yaml --model output\fold_0\best_model.pth --input data\volumes\ --output results\batch_results.csv
+python scripts\inference.py --config configs\config.yaml --model output\default\run_YYYYMMDD-HHMMSS_resnet3d_tiny\best_model.pth --input data\volumes\ --output results\batch_results.csv
 
 # Generate or rebuild cache (see scripts/cache_management)
 python scripts\cache_management\generate_cache.py --config configs\config.yaml --num-workers 8

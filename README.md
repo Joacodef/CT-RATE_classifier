@@ -7,9 +7,9 @@ This project provides a system for classifying pathologies in 3D CT (Computed To
 The recommended workflow for using this repository is as follows:
 
 1.  **Setup**: Install dependencies and configure the environment.
-2.  **Data Preparation**: Use scripts to filter the dataset, download files, and create k-fold splits.
+2.  **Data Preparation**: Use scripts to filter the dataset, download files, and prepare fixed training/validation splits.
 3.  **Cache Generation**: Pre-process and cache the dataset to accelerate training.
-4.  **Training**: Train a model on a specific fold.
+4.  **Training**: Train a model using the configured training/validation split.
 5.  **Inference**: Use a trained model to make predictions on new scans.
 6.  **Hyperparameter Optimization (Optional)**: Run a search to find optimal hyperparameters.
 
@@ -27,7 +27,6 @@ The recommended workflow for using this repository is as follows:
 │   ├── data_preparation/       # Scripts for downloading, filtering, and splitting data
 │   │   ├── create_filtered_dataset.py
 │   │   ├── verify_and_download.py
-│   │   ├── create_kfold_splits.py
 │   │   └── create_training_subsets_hpo.py
 │   ├── cache_management/       # Scripts for generating and verifying the cache
 │   │   ├── generate_cache.py
@@ -89,8 +88,6 @@ Scripts in `scripts/data_preparation/` are used to prepare the dataset.
 
 * **`create_filtered_dataset.py`**: Generates a master list of volumes by applying patient-level exclusion rules from multiple source files to prevent data leakage.
 * **`verify_and_download.py`**: Checks for missing NIfTI files locally and downloads them from the specified Hugging Face repository.
-* **`create_kfold_splits.py`**: Creates k-fold splits using grouped, stratified sampling from the filtered master list. It groups scans by patient to prevent data leakage and stratifies by pathology to ensure balanced folds.
-
 **Example Workflow:**
 
 ```bash
@@ -100,11 +97,8 @@ python scripts/data_preparation/create_filtered_dataset.py --config configs/my_e
 # 2. Download any missing files from Hugging Face
 python scripts/data_preparation/verify_and_download.py --config configs/my_experiment.yaml
 
-# 3. Create 5 cross-validation folds
-python scripts/data_preparation/create_kfold_splits.py \
-    --config configs/my_experiment.yaml \
-    --n-splits 5 \
-    --output-dir "data/splits/kfold_5"
+# 3. Prepare fixed split CSVs (train.csv / valid.csv) under data/splits/
+# This repository expects split files referenced by paths.data_subsets in your config.
 ```
 
 -----
@@ -142,18 +136,16 @@ The training data pipeline is designed for efficiency, separating preprocessing 
 
 ### Running Training
 
-To train a model, specify the fold number. The script will locate the correct split files.
+To train a model, configure `paths.data_subsets.train` and `paths.data_subsets.valid` in your config.
 
 ```bash
-# Train on fold 0
+# Train using configured split files
 python scripts/train.py \
-    --config configs/my_experiment.yaml \
-    --fold 0
+    --config configs/my_experiment.yaml
 
-# Resume training from the latest checkpoint for fold 0
+# Resume training from the latest checkpoint
 python scripts/train.py \
     --config configs/my_experiment.yaml \
-    --fold 0 \
     --resume
 ```
 
@@ -186,10 +178,10 @@ The project includes a hyperparameter optimization script using Optuna.
 **Example Workflow:**
 
 ```bash
-# 1. Create subsets from the training data of the first fold
+# 1. Create subsets from the configured training split
 python scripts/data_preparation/create_training_subsets_hpo.py \
     --config configs/my_experiment.yaml \
-    --input-file data/splits/kfold_5/train_fold_0.csv \
+    --input-file data/splits/train.csv \
     --fractions 0.5 0.2 0.05
 
 # 2. Run the optimization study

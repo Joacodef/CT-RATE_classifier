@@ -91,17 +91,28 @@ def download_worker(volume_name: str, config: SimpleNamespace, hf_cache_dir: Pat
         return f"FAIL: {volume_name}"
 
 
-def main(config_path: str):
+def main(config_path: str, subset: str = "train"):
     """Main orchestrator function that finds and downloads missing dataset files."""
     logger.info("--- Starting Dataset Verification and Download Script ---")
     config = load_config(config_path)
 
-    full_dataset_path = Path(config.paths.data_dir) / config.paths.data_subsets.train
-    logger.info(f"Using dataset definition from: {full_dataset_path}")
+    data_subsets = config.paths.data_subsets
+    if subset == "train":
+        dataset_paths = [Path(data_subsets.train)]
+    elif subset == "valid":
+        dataset_paths = [Path(data_subsets.valid)]
+    else:  # subset == "all"
+        dataset_paths = [Path(data_subsets.train), Path(data_subsets.valid)]
 
-    all_missing_files = find_missing_files(
-        full_dataset_path, Path(config.paths.img_dir), config.paths.dir_structure
-    )
+    missing_files_set = set()
+    for dataset_path in dataset_paths:
+        logger.info(f"Using dataset definition from: {dataset_path}")
+        missing_for_split = find_missing_files(
+            dataset_path, Path(config.paths.img_dir), config.paths.dir_structure
+        )
+        missing_files_set.update(missing_for_split)
+
+    all_missing_files = sorted(missing_files_set)
     
     # Define and create a temporary directory for HF downloads
     temp_hf_cache_dir = Path(config.paths.data_dir) / "temp_hf_download_cache"
@@ -138,6 +149,13 @@ if __name__ == '__main__':
         default='configs/config.yaml',
         help='Path to the YAML config file.'
     )
+    parser.add_argument(
+        '--subset',
+        type=str,
+        default='train',
+        choices=['train', 'valid', 'all'],
+        help="Which split to verify/download: 'train', 'valid', or 'all'."
+    )
     args = parser.parse_args()
     
-    main(args.config)
+    main(args.config, args.subset)

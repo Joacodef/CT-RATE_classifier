@@ -51,7 +51,7 @@ torch_dtype: "float32"
 
 # --- Model Configuration ---
 model:
-  type: "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d", "mlp"
+  type: "vit3d"  # Options: "resnet3d", "densenet3d", "vit3d"
   variant: "tiny"      # Options depend on model type (e.g., "18", "121", "base")
 
   # Vision Transformer specific settings (only used if model.type == "vit3d")
@@ -62,21 +62,8 @@ model:
     num_heads: 6
 
 # --- Workflow Configuration ---
-# Defines the overall training methodology.
 workflow:
-  # Options: "end-to-end", "feature-based"
-  # "end-to-end": Trains the model directly on image data.
-  # "feature-based": A two-stage process. First, generate features with a pre-trained
-  #                  model, then train a smaller classifier on those features.
-  # NOTE: set model.type to "mlp" when using "feature-based".
   mode: "end-to-end"
-
-  # Settings for the feature-based workflow (only used if mode is "feature-based")
-  feature_config:
-    # Path to the pre-trained model checkpoint used for feature extraction.
-    feature_extractor_path: null # e.g., "output/pretrained_model/best_model.pth"
-    # Directory where feature vectors are stored and loaded from.
-    feature_dir: "output/features"
     
 # --- Loss Function Configuration ---
 loss_function:
@@ -100,9 +87,6 @@ training:
   prefetch_factor: 2  # Number of batches to prefetch in DataLoader
   early_stopping_patience: 5
   resume_from_checkpoint: null # Set to a path like 'path/to/checkpoint.pth' to resume
-  # If true and using feature-based workflow, preload all feature .pt tensors into RAM at dataset init.
-  # WARNING: enabling this may use a lot of memory depending on dataset size.
-  features_preload_to_ram: false
 
 # --- Training Optimizations ---
 optimization:

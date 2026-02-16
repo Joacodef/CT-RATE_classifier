@@ -81,9 +81,9 @@ def setup_test_environment(tmp_path):
         nib.save(dummy_nifti_img, volume_dir / vol_name)
 
     # 4. Create dummy CSV files
-    # Data splits (fold 0)
-    pd.DataFrame({"VolumeName": train_vols}).to_csv(splits_dir / "train_fold_0.csv", index=False)
-    pd.DataFrame({"VolumeName": valid_vols}).to_csv(splits_dir / "valid_fold_0.csv", index=False)
+    # Data splits
+    pd.DataFrame({"VolumeName": train_vols}).to_csv(splits_dir / "train.csv", index=False)
+    pd.DataFrame({"VolumeName": valid_vols}).to_csv(splits_dir / "valid.csv", index=False)
 
     # Master labels file
     labels_df = pd.DataFrame({
@@ -123,7 +123,7 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
     """
     model_type = request.param.get("model_type", "resnet3d")
     use_cache = request.param.get("use_cache", False)
-    workflow_mode = request.param.get("workflow_mode", "end-to-end")
+    workflow_mode = "end-to-end"
 
     env = setup_test_environment
     root_dir = env["root_dir"]
@@ -133,7 +133,6 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
     monkeypatch.setenv("CACHE_DIR", str(env["cache_dir"]))
     monkeypatch.setenv("DATA_DIR", str(env["data_dir"]))
 
-    feature_dir = Path(env["output_dir"]) / f"{model_type}_cache-{use_cache}_workflow-{workflow_mode}" / "features"
     config_data = {
         'paths': {
             'img_dir': str(env["img_dir"]),
@@ -142,8 +141,8 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
             'data_dir': '${DATA_DIR}',
             'dir_structure': 'nested',
             'data_subsets': {
-                'train': 'splits/train_fold_0.csv',
-                'valid': 'splits/valid_fold_0.csv'
+                'train': 'splits/train.csv',
+                'valid': 'splits/valid.csv'
             },
             'labels': {'all': 'labels/all_predicted_labels.csv'},
         },
@@ -154,9 +153,6 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
         },
         'workflow': {
             'mode': workflow_mode,
-            'feature_config': {
-                'feature_dir': str(feature_dir)
-            }
         },
         'loss_function': {'type': 'BCEWithLogitsLoss'},
         'training': {
@@ -184,34 +180,9 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
     output_dir = Path(env["output_dir"]) / f"{model_type}_cache-{use_cache}_workflow-{workflow_mode}"
     config_data['paths']['output_dir'] = str(output_dir)
 
-    # Ensure the output directory and feature subdirectories exist
+    # Ensure the output directory exists
     output_dir = Path(config_data['paths']['output_dir'])
     output_dir.mkdir(parents=True, exist_ok=True)
-    train_features_dir = feature_dir / "train"
-    valid_features_dir = feature_dir / "valid"
-    train_features_dir.mkdir(parents=True, exist_ok=True)
-    valid_features_dir.mkdir(parents=True, exist_ok=True)
-
-    # Read split CSVs to determine volume names
-    splits_base = Path(env['data_dir']) / 'splits'
-    train_csv = splits_base / 'train_fold_0.csv'
-    valid_csv = splits_base / 'valid_fold_0.csv'
-    try:
-        train_vols = pd.read_csv(train_csv)['VolumeName'].tolist()
-        valid_vols = pd.read_csv(valid_csv)['VolumeName'].tolist()
-    except Exception:
-        train_vols = []
-        valid_vols = []
-
-    # Always create feature files for all train/valid volumes in the correct per-test output directory
-    feature_dim = 512
-    for vol_name in train_vols:
-        feature_filename = f"{vol_name}.pt"
-        torch.save(torch.randn(feature_dim), train_features_dir / feature_filename)
-
-    for vol_name in valid_vols:
-        feature_filename = f"{vol_name}.pt"
-        torch.save(torch.randn(feature_dim), valid_features_dir / feature_filename)
 
     # Write config file after all directories and files are created
     config_path = root_dir / f"test_config_{model_type}_{use_cache}.yaml"
@@ -229,7 +200,6 @@ def generate_test_config(request, setup_test_environment, monkeypatch):
         {"model_type": "resnet3d", "use_cache": True},
         {"model_type": "densenet3d", "use_cache": False},
         {"model_type": "vit3d", "use_cache": False},
-        {"model_type": "mlp", "use_cache": False, "workflow_mode": "feature-based"},  # new parameter to exercise the feature-based workflow
     ],
     indirect=True
 )
@@ -282,38 +252,4 @@ class TestEndToEndTrainingFlow:
         final_model_path = output_dir / "final_model.pth"
         checkpoint = torch.load(final_model_path, map_location=torch.device('cpu'), weights_only=False)
         assert checkpoint['epoch'] == 1
-
-    def test_feature_based_training_run(self, generate_test_config):
-        """
-        Run a feature-based training flow. Verifies that:
-        - the configuration requests a model of type 'mlp'
-        - the returned model is a torch.nn.Module (MLP)
-        - training finishes successfully (history contains losses)
-        """
-        config = generate_test_config
-        output_dir = Path(config.paths.output_dir)
-
-        # Only apply this test for runs configured as feature-based.
-        if getattr(config.workflow, "mode", None) not in ("feature-based", "feature_based", "feature"):
-            pytest.skip("Not a feature-based run for this parametrization; skipping test_feature_based_training_run.")
-        
-        # Ensure the configuration requested the feature-based mode and the correct model type
-        assert getattr(config.model, "type", None) == "mlp"
-        assert getattr(config.workflow, "mode", None) in ("feature-based", "feature_based", "feature")
-
-        model, history = train_model(config)
-
-        # Basic result assertions
-        assert isinstance(model, torch.nn.Module)
-        # Prefer checking the class name to confirm MLP if present in the name
-        model_name = model.__class__.__name__.lower()
-        assert "mlp" in model_name or getattr(config.model, "type", "") == "mlp"
-
-        assert isinstance(history, dict)
-        assert "train_loss" in history
-        assert len(history["train_loss"]) >= 1
-
-        # Expected final artifacts/files
-        final_model_path = output_dir / "final_model.pth"
-        assert final_model_path.exists()
 

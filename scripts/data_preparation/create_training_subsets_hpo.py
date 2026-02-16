@@ -176,7 +176,7 @@ def main():
         "--input-file",
         type=str,
         required=True,
-        help="Path to the input CSV file to be split (e.g., 'data/splits/train_fold_0.csv').",
+        help="Path to the input CSV file to be split (e.g., 'data/splits/train.csv').",
     )
     parser.add_argument(
         "--fractions",

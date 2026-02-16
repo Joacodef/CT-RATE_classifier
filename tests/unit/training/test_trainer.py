@@ -564,7 +564,7 @@ class TestGenerateWandbRunName:
             model=SimpleNamespace(type="resnet3d", variant="18"),
             workflow=SimpleNamespace(mode="end-to-end"),
             paths=SimpleNamespace(
-                data_subsets=SimpleNamespace(train="/data/splits/train_fold_0.csv"),
+                data_subsets=SimpleNamespace(train="/data/splits/train.csv"),
             ),
             training=SimpleNamespace(learning_rate=1e-4, batch_size=2, augment=True),
             cache=SimpleNamespace(use_cache=True),

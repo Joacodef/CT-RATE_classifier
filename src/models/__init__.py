@@ -25,8 +25,6 @@ from .vit3d import (
     vit_base_3d,
     vit_large_3d
 )
-from .mlp import create_mlp_classifier
-from .logistic import create_logistic_classifier
 from monai.losses import FocalLoss
 
 __all__ = [
@@ -52,9 +50,5 @@ __all__ = [
     'vit_large_3d',
     
     # Loss functions
-    'FocalLoss',
-
-    # Feature classifiers
-    'create_mlp_classifier',
-    'create_logistic_classifier'
+    'FocalLoss'
 ]

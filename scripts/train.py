@@ -41,7 +41,7 @@ def _sanitize_component(component: str) -> str:
     return sanitized if sanitized else "run"
 
 
-def _build_run_folder_name(config, fold: Optional[int]) -> str:
+def _build_run_folder_name(config, fold: Optional[int] = None) -> str:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     parts = [timestamp]
 
@@ -94,11 +94,11 @@ def _derive_split_name(config) -> str:
 
 def main():
     """
-    Main function to start or resume the training process for a specific fold.
+    Main function to start or resume the training process.
     It loads a base configuration and allows for overrides via command-line arguments.
     """
     parser = argparse.ArgumentParser(
-        description="Run the training pipeline for a specific cross-validation fold.",
+        description="Run the training pipeline.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
@@ -108,17 +108,10 @@ def main():
         help="Path to the base YAML configuration file.",
     )
     parser.add_argument(
-        "--fold",
-        type=int,
-        default=None,
-        help="The specific fold number to train (e.g., 0, 1, 2...).\n"
-             "If not provided, the script uses the default paths in the config file."
-    )
-    parser.add_argument(
         '--model-type',
         type=str,
         default=None,
-        choices=['resnet3d', 'densenet3d', 'vit3d', 'mlp'],
+        choices=['resnet3d', 'densenet3d', 'vit3d'],
         help='Override the model architecture from the config file.'
     )
     parser.add_argument(
@@ -131,8 +124,8 @@ def main():
         '--workflow',
         type=str,
         default=None,
-        choices=['end-to-end', 'feature-based'],
-        help="Set the training workflow. Use 'feature-based' to train on precomputed features."
+        choices=['end-to-end'],
+        help="Set the training workflow. Only 'end-to-end' is supported."
     )
     parser.add_argument(
         '--resume',
@@ -167,100 +160,24 @@ def main():
             config.workflow = SimpleNamespace()
         config.workflow.mode = args.workflow
 
-    # If feature-based mode is selected, ensure the feature directory is defined in the workflow config
-    if getattr(config, 'workflow', None) and getattr(config.workflow, 'mode', None) == 'feature-based':
-        if not hasattr(config.workflow, 'feature_config'):
-            config.workflow.feature_config = SimpleNamespace()
+    if getattr(config, 'workflow', None) and getattr(config.workflow, 'mode', 'end-to-end') != 'end-to-end':
+        logging.error("Only 'end-to-end' workflow is supported.")
+        return
 
-        feature_dir = getattr(config.workflow.feature_config, 'feature_dir', None)
-        if not feature_dir:
-            logging.error(
-                "Feature-based workflow selected but 'workflow.feature_config.feature_dir' is not set in the config."
-            )
-            return
-
-        logging.info(f"Using feature directory from workflow configuration: {feature_dir}")
-
-        # Disable augmentations because they are incompatible with precomputed features
-        if hasattr(config, 'training') and hasattr(config.training, 'augment'):
-            logging.info('Disabling on-the-fly augmentations for feature-based workflow')
-            config.training.augment = False
-        # On Windows, DataLoader workers commonly hang when loading complex objects.
-        # Force a safe single-process data loading configuration to avoid hangs.
-        try:
-            if sys.platform.startswith('win'):
-                if hasattr(config.training, 'num_workers') and config.training.num_workers > 0:
-                    logging.warning(
-                        "Windows detected: overriding training.num_workers>0 to 0 and disabling pin_memory to avoid DataLoader hangs for feature-based workflow."
-                    )
-                    config.training.num_workers = 0
-                    if hasattr(config.training, 'pin_memory'):
-                        config.training.pin_memory = False
-        except Exception:
-            # don't crash on unexpected config shapes; this is a best-effort mitigation
-            pass
-        # --- Sanity checks: ensure feature dir and required subfolders exist ---
-        try:
-            from pathlib import Path as _Path
-            feature_root = _Path(feature_dir)
-            if not feature_root.exists():
-                logging.error(f"Feature directory does not exist: {feature_root}")
-                return
-
-            train_sub = feature_root / 'train'
-            valid_sub = feature_root / 'valid'
-
-            # Accept either layout A: feature_root/{train,valid} OR layout B: feature_root contains all .pt files
-            has_subfolders = train_sub.exists() and valid_sub.exists()
-            has_pt_files_at_root = any(feature_root.glob('*.pt'))
-
-            if not has_subfolders and not has_pt_files_at_root:
-                logging.error(
-                    "Feature directory must either contain 'train' and 'valid' subfolders, "
-                    "or contain .pt feature files at its top level. "
-                    f"Checked: {feature_root}"
-                )
-                return
-
-            if has_subfolders:
-                logging.info("Detected feature layout with 'train' and 'valid' subfolders.")
-            else:
-                logging.info("Detected flattened feature layout: using the same feature dir for both train and valid.")
-
-        except Exception as e:
-            logging.error(f"Error while checking feature directory: {e}")
-            return
-
-    # 3. Dynamically set paths based on the specified fold
-    if args.fold is not None:
-        logger.info(f"Running training for fold: {args.fold}")
-        
-        # Get the directory where fold splits are stored
-        # Assumes the original config path is something like '.../train_fold_0.csv'
-        original_train_path = Path(config.paths.data_subsets.train)
-        folds_dir = original_train_path.parent
-
-        # Update the train and validation paths for the specific fold
-        config.paths.data_subsets.train = str(folds_dir / f"train_fold_{args.fold}.csv")
-        config.paths.data_subsets.valid = str(folds_dir / f"valid_fold_{args.fold}.csv")
-        logger.info(f"Using training data: {config.paths.data_subsets.train}")
-        logger.info(f"Using validation data: {config.paths.data_subsets.valid}")
-
-    # 4. Prepare the output directory structure with timestamped run folders.
+    # 3. Prepare the output directory structure with timestamped run folders.
     base_output_dir = Path(config.paths.output_dir)
     split_name_raw = _derive_split_name(config)
     split_name = _sanitize_component(split_name_raw)
     split_dir = base_output_dir / split_name
-    fold_label = f"fold_{args.fold}" if args.fold is not None else "full"
-    fold_dir = split_dir / fold_label
+    full_dir = split_dir / "full"
 
     resume_checkpoint_path: Optional[Path] = None
     run_output_dir: Optional[Path] = None
 
     if args.resume:
         if args.resume is True:
-            latest_run_dir = _find_latest_run_directory(fold_dir)
-            search_dir = latest_run_dir if latest_run_dir else fold_dir
+            latest_run_dir = _find_latest_run_directory(full_dir)
+            search_dir = latest_run_dir if latest_run_dir else full_dir
             logging.info(f"Attempting automatic resume. Looking for checkpoints in {search_dir}...")
             if search_dir.exists():
                 latest_checkpoint = find_latest_checkpoint(search_dir)
@@ -303,17 +220,16 @@ def main():
                 return
 
     if run_output_dir is None:
-        fold_dir.mkdir(parents=True, exist_ok=True)
-        run_folder_name = _build_run_folder_name(config, args.fold)
-        run_output_dir = fold_dir / run_folder_name
+        full_dir.mkdir(parents=True, exist_ok=True)
+        run_folder_name = _build_run_folder_name(config)
+        run_output_dir = full_dir / run_folder_name
 
     run_output_dir.mkdir(parents=True, exist_ok=True)
 
     config.paths.base_output_dir = base_output_dir.resolve()
     config.paths.split_name = split_name_raw
     config.paths.split_output_dir = split_dir.resolve()
-    if args.fold is not None:
-        config.paths.fold_output_dir = fold_dir.resolve()
+    config.paths.fold_output_dir = full_dir.resolve()
     config.paths.output_dir = run_output_dir.resolve()
     config.paths.run_name = run_output_dir.name
 
@@ -326,26 +242,17 @@ def main():
     logger.info(f"Output will be saved to: {config.paths.output_dir}")
     workflow_ns = getattr(config, 'workflow', None)
     current_mode = getattr(workflow_ns, 'mode', None) if workflow_ns else None
-    feature_cfg_ns = getattr(workflow_ns, 'feature_config', SimpleNamespace()) if workflow_ns else SimpleNamespace()
-    current_feature_dir = getattr(feature_cfg_ns, 'feature_dir', None)
     logging.info(
-        "Current workflow config before training: mode=%s, feature_dir=%s",
+        "Current workflow config before training: mode=%s",
         current_mode,
-        current_feature_dir,
     )
-    if (
-        workflow_ns
-        and getattr(workflow_ns, "mode", None) == "feature-based"
-        and current_feature_dir is None
-    ):
-        logging.warning("workflow.feature_config.feature_dir is None after loading config.")
 
     # 5. Setup logging and start training
     log_dir = Path(config.paths.output_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(log_file=log_dir / 'training.log')
     
-    logging.info(f"Configuration for fold {args.fold} loaded and processed. Starting training.")
+    logging.info("Configuration loaded and processed. Starting training.")
     train_model(config)
 
 if __name__ == "__main__":

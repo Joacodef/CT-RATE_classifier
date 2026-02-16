@@ -72,7 +72,7 @@ def create_filtered_dataset(config):
         across training and validation/test sets.
 
     The final, filtered list is saved as a CSV file, which serves as the
-    basis for all subsequent data preparation steps, like creating k-fold splits.
+    basis for all subsequent data preparation steps, like preparing train/valid split files.
     """
     logger.info("Starting dataset filtering process...")
 
