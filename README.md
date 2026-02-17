@@ -21,7 +21,7 @@ The recommended workflow for using this repository is as follows:
 .
 ├── configs/                    # Configuration files
 ├── data/                       # (Git-ignored) Raw and processed data
-├── output/                     # (Git-ignored) Saved models, logs, and reports
+├── output/                     # (Git-ignored) Training runs (e.g., run_YYYYMMDD-HHMMSS_model_variant)
 ├── requirements.txt            # Project dependencies
 ├── scripts/                    # High-level scripts for core tasks
 │   ├── data_preparation/       # Scripts for downloading, filtering, and splitting data
@@ -149,6 +149,37 @@ python scripts/train.py \
     --resume
 ```
 
+### Training Output Structure
+
+Each new training run is saved under the configured `paths.output_dir` using a timestamped run folder:
+
+```text
+output/
+    run_YYYYMMDD-HHMMSS_<model>_<variant>/
+        training.log
+        best_model.pth
+        last_checkpoint.pth
+        final_model.pth
+        training_history.json
+        training_metrics_detailed.csv
+        training_summary.json
+```
+
+When using `--resume` without an explicit path, the script automatically scans the `output/` root for the most recent run and resumes from the latest checkpoint found there.
+
+### Weights & Biases Run Names
+
+If W&B logging is enabled, run names are auto-generated from key configuration fields to improve experiment traceability, including:
+
+- model type and variant
+- workflow mode
+- train split identifier
+- epochs, batch size, learning rate, and weight decay
+- input shape and number of classes
+- optimization/cache flags (augment, cache, mixed precision, bf16)
+
+A short hash suffix is appended for uniqueness across similar runs.
+
 -----
 
 ## 5\. Inference
@@ -160,8 +191,8 @@ The `inference.py` script uses a trained model to make predictions on new data. 
 ```bash
 # Run inference on a directory of volumes
 python scripts/inference.py \
-    --config /path/to/output/from_training/config.yaml \
-    --model /path/to/output/from_training/best_model.pth \
+    --config /path/to/configs/my_experiment.yaml \
+    --model /path/to/output/run_YYYYMMDD-HHMMSS_resnet3d_18/best_model.pth \
     --input /path/to/directory_of_volumes/ \
     --output /path/to/results/batch_results.csv
 ```

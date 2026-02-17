@@ -30,6 +30,15 @@ This directory holds utilities for creating and managing the MONAI `PersistentDa
 
 This script runs the training pipeline. It loads a base configuration file and can be customized with command-line arguments to override model architecture, workflow mode, or resume from a checkpoint.
 
+**Output behavior:**
+
+- New runs are created directly under `paths.output_dir` as timestamped folders (for example: `run_YYYYMMDD-HHMMSS_resnet3d_18`).
+- `--resume` (without a path) searches the output root for the latest run and resumes from the latest checkpoint found.
+
+**W&B naming behavior:**
+
+- If Weights & Biases is enabled, run names are auto-generated from key config fields (model, split, workflow, core hyperparameters, shape/classes, and optimization flags) plus a short hash suffix.
+
 **Usage:**
 
 ```bash
@@ -52,15 +61,15 @@ This script runs inference on CT volumes using a trained model and a consistent 
 ```bash
 # Run inference on a single volume
 python scripts/inference.py \
-    --config /path/to/output/from_training/config.yaml \
-    --model /path/to/output/from_training/best_model.pth \
+    --config /path/to/configs/config.yaml \
+    --model /path/to/output/run_YYYYMMDD-HHMMSS_resnet3d_18/best_model.pth \
     --input /path/to/volume.nii.gz \
     --output /path/to/results
 
 # Run inference on a directory of volumes
 python scripts/inference.py \
-    --config /path/to/output/from_training/config.yaml \
-    --model /path/to/output/from_training/best_model.pth \
+    --config /path/to/configs/config.yaml \
+    --model /path/to/output/run_YYYYMMDD-HHMMSS_resnet3d_18/best_model.pth \
     --input /path/to/volume_directory/ \
     --output /path/to/batch_results
 ```

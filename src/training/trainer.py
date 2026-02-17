@@ -71,7 +71,7 @@ from src.data.cache_utils import (
 
 
 def generate_wandb_run_name(config: SimpleNamespace) -> str:
-    """Create a compact W&B run name using model variant, workflow mode, and dataset."""
+    """Create an informative, compact W&B run name from key config settings."""
 
     def _sanitize_component(component: str, fallback: str) -> str:
         if not component:
@@ -80,14 +80,21 @@ def generate_wandb_run_name(config: SimpleNamespace) -> str:
         sanitized = sanitized.strip('-_')
         return sanitized or fallback
 
+    def _format_number(value: Any, fallback: str = 'na') -> str:
+        if value is None:
+            return fallback
+        try:
+            if isinstance(value, float):
+                return f"{value:.0e}"
+            return str(value)
+        except Exception:
+            return fallback
+
     model_ns = getattr(config, 'model', SimpleNamespace())
     model_type = _sanitize_component(str(getattr(model_ns, 'type', 'model')).upper(), 'MODEL')
     model_variant = getattr(model_ns, 'variant', None)
-    if model_variant:
-        variant_part = _sanitize_component(str(model_variant).upper(), 'VAR')
-        model_part = f"{model_type}-{variant_part}"
-    else:
-        model_part = model_type
+    model_variant_part = _sanitize_component(str(model_variant).upper(), 'VAR') if model_variant else None
+    model_part = f"{model_type}-{model_variant_part}" if model_variant_part else model_type
 
     workflow_ns = getattr(config, 'workflow', SimpleNamespace())
     workflow_mode = _sanitize_component(str(getattr(workflow_ns, 'mode', 'workflow')).lower(), 'workflow')
@@ -103,20 +110,73 @@ def generate_wandb_run_name(config: SimpleNamespace) -> str:
     except Exception:
         dataset_part = 'dataset'
 
+    training_ns = getattr(config, 'training', SimpleNamespace())
+    optimization_ns = getattr(config, 'optimization', SimpleNamespace())
+    image_processing_ns = getattr(config, 'image_processing', SimpleNamespace())
+    cache_ns = getattr(config, 'cache', SimpleNamespace())
+    pathologies_ns = getattr(config, 'pathologies', SimpleNamespace())
+
+    epochs = getattr(training_ns, 'num_epochs', None)
+    batch_size = getattr(training_ns, 'batch_size', None)
+    learning_rate = getattr(training_ns, 'learning_rate', None)
+    weight_decay = getattr(training_ns, 'weight_decay', None)
+    augment = getattr(training_ns, 'augment', None)
+    use_cache = getattr(cache_ns, 'use_cache', None)
+    mixed_precision = getattr(optimization_ns, 'mixed_precision', None)
+    use_bf16 = getattr(optimization_ns, 'use_bf16', None)
+
+    shape_token = 'szna'
+    target_shape = getattr(image_processing_ns, 'target_shape_dhw', None)
+    if isinstance(target_shape, (list, tuple)) and len(target_shape) == 3:
+        dims = [str(dim) for dim in target_shape]
+        shape_token = f"sz{'x'.join(dims)}"
+
+    class_count = None
+    columns = getattr(pathologies_ns, 'columns', None)
+    if isinstance(columns, (list, tuple)):
+        class_count = len(columns)
+
+    flags_token = f"aug{int(bool(augment))}-cache{int(bool(use_cache))}-mp{int(bool(mixed_precision))}-bf16{int(bool(use_bf16))}"
+
     signature_payload = {
-        'lr': getattr(getattr(config, 'training', SimpleNamespace()), 'learning_rate', None),
-        'batch': getattr(getattr(config, 'training', SimpleNamespace()), 'batch_size', None),
-        'augment': getattr(getattr(config, 'training', SimpleNamespace()), 'augment', None),
-        'cache': getattr(getattr(config, 'cache', SimpleNamespace()), 'use_cache', None),
-        'mp': getattr(getattr(config, 'optimization', SimpleNamespace()), 'mixed_precision', None),
+        'model': {'type': getattr(model_ns, 'type', None), 'variant': getattr(model_ns, 'variant', None)},
+        'workflow': getattr(workflow_ns, 'mode', None),
+        'subset_train': str(getattr(getattr(getattr(config, 'paths', SimpleNamespace()), 'data_subsets', SimpleNamespace()), 'train', None)),
+        'epochs': epochs,
+        'batch_size': batch_size,
+        'learning_rate': learning_rate,
+        'weight_decay': weight_decay,
+        'target_shape_dhw': target_shape,
+        'num_classes': class_count,
+        'augment': augment,
+        'use_cache': use_cache,
+        'mixed_precision': mixed_precision,
+        'use_bf16': use_bf16,
     }
     try:
         signature_raw = json.dumps(signature_payload, sort_keys=True, default=str).encode('utf-8')
-        signature_part = hashlib.sha1(signature_raw).hexdigest()[:4]
+        signature_part = hashlib.sha1(signature_raw).hexdigest()[:6]
     except Exception:
         signature_part = 'custom'
 
-    return f"{model_part}_{workflow_mode}_{dataset_part}_{signature_part}"
+    name_parts = [
+        model_part,
+        workflow_mode,
+        dataset_part,
+        f"ep{_format_number(epochs)}",
+        f"bs{_format_number(batch_size)}",
+        f"lr{_format_number(learning_rate)}",
+        f"wd{_format_number(weight_decay)}",
+        shape_token,
+        f"cls{_format_number(class_count)}",
+        flags_token,
+    ]
+
+    compact_name = "_".join(_sanitize_component(part, 'na') for part in name_parts if part)
+    if len(compact_name) > 108:
+        compact_name = compact_name[:108].rstrip('-_')
+
+    return f"{compact_name}_{signature_part}"
 
 
 def create_model(config: SimpleNamespace) -> nn.Module:

@@ -167,17 +167,14 @@ def main():
     # 3. Prepare the output directory structure with timestamped run folders.
     base_output_dir = Path(config.paths.output_dir)
     split_name_raw = _derive_split_name(config)
-    split_name = _sanitize_component(split_name_raw)
-    split_dir = base_output_dir / split_name
-    full_dir = split_dir / "full"
 
     resume_checkpoint_path: Optional[Path] = None
     run_output_dir: Optional[Path] = None
 
     if args.resume:
         if args.resume is True:
-            latest_run_dir = _find_latest_run_directory(full_dir)
-            search_dir = latest_run_dir if latest_run_dir else full_dir
+            latest_run_dir = _find_latest_run_directory(base_output_dir)
+            search_dir = latest_run_dir if latest_run_dir else base_output_dir
             logging.info(f"Attempting automatic resume. Looking for checkpoints in {search_dir}...")
             if search_dir.exists():
                 latest_checkpoint = find_latest_checkpoint(search_dir)
@@ -220,16 +217,16 @@ def main():
                 return
 
     if run_output_dir is None:
-        full_dir.mkdir(parents=True, exist_ok=True)
+        base_output_dir.mkdir(parents=True, exist_ok=True)
         run_folder_name = _build_run_folder_name(config)
-        run_output_dir = full_dir / run_folder_name
+        run_output_dir = base_output_dir / run_folder_name
 
     run_output_dir.mkdir(parents=True, exist_ok=True)
 
     config.paths.base_output_dir = base_output_dir.resolve()
     config.paths.split_name = split_name_raw
-    config.paths.split_output_dir = split_dir.resolve()
-    config.paths.fold_output_dir = full_dir.resolve()
+    config.paths.split_output_dir = base_output_dir.resolve()
+    config.paths.fold_output_dir = base_output_dir.resolve()
     config.paths.output_dir = run_output_dir.resolve()
     config.paths.run_name = run_output_dir.name
 

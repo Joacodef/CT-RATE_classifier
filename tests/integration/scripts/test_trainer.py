@@ -118,15 +118,13 @@ def test_train_script_resume_no_checkpoint(mock_log_warning, mock_train_model, t
 @patch("scripts.train.train_model")
 def test_train_script_resume_with_checkpoint(mock_train_model, test_environment, monkeypatch):
     """
-    Tests the --resume flag when a checkpoint file exists in the base output directory.
+    Tests the --resume flag when a checkpoint file exists in a run directory under the base output directory.
     Verifies the config is updated with the correct checkpoint path.
     """
     config_path = test_environment["config_path"]
     output_dir = test_environment["output_dir"]
 
-    split_dir = output_dir / "tiny_split"
-    fold_dir = split_dir / "full"
-    run_dir = fold_dir / "run_test"
+    run_dir = output_dir / "run_test"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint_path = run_dir / "last_checkpoint.pth"

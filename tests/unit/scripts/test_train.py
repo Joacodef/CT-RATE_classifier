@@ -67,11 +67,9 @@ def test_cli_resume_auto_selects_latest_checkpoint(monkeypatch, tmp_path: Path):
     cfg.training = SimpleNamespace(augment=True, num_workers=4, pin_memory=True)
     cfg.model = SimpleNamespace(type="resnet3d", variant="18")
 
-    # create two run dirs under out/splits/full so that the latest is chosen
-    split_dir = out / splits_dir.name
-    fold_dir = split_dir / "full"
-    (fold_dir / "run_old").mkdir(parents=True)
-    run_latest = fold_dir / "run_latest"
+    # create two run dirs directly under out so that the latest is chosen
+    (out / "run_old").mkdir(parents=True)
+    run_latest = out / "run_latest"
     run_latest.mkdir(parents=True)
 
     # touch a checkpoint file inside run_latest
@@ -90,7 +88,7 @@ def test_cli_resume_auto_selects_latest_checkpoint(monkeypatch, tmp_path: Path):
 
     # Ensure the filesystem-based latest-run finder will prefer run_latest by mtime
     # Set run_latest mtime > run_old
-    old_dir = fold_dir / "run_old"
+    old_dir = out / "run_old"
     now = int(os.path.getmtime(run_latest))
     os.utime(old_dir, (now - 100, now - 100))
     os.utime(run_latest, (now, now))

@@ -566,9 +566,11 @@ class TestGenerateWandbRunName:
             paths=SimpleNamespace(
                 data_subsets=SimpleNamespace(train="/data/splits/train.csv"),
             ),
-            training=SimpleNamespace(learning_rate=1e-4, batch_size=2, augment=True),
+            training=SimpleNamespace(learning_rate=1e-4, batch_size=2, num_epochs=10, weight_decay=0.01, augment=True),
             cache=SimpleNamespace(use_cache=True),
-            optimization=SimpleNamespace(mixed_precision=False),
+            optimization=SimpleNamespace(mixed_precision=False, use_bf16=True),
+            image_processing=SimpleNamespace(target_shape_dhw=[16, 32, 64]),
+            pathologies=SimpleNamespace(columns=["A", "B", "C"]),
         )
 
     def test_sanitization_and_fallbacks(self):
@@ -584,9 +586,16 @@ class TestGenerateWandbRunName:
         assert "SMALL-BETA" in name
         assert "feat-mode" in name
         assert "train_split--set" in name
-        assert name.startswith("VIT-3D-SMALL-BETA_feat-mode_train_split--set_")
+        assert "ep10" in name
+        assert "bs2" in name
+        assert "lr1e-04" in name
+        assert "wd1e-02" in name
+        assert "sz16x32x64" in name
+        assert "cls3" in name
+        assert "aug1-cache1-mp0-bf161" in name
+        assert name.startswith("VIT-3D-SMALL-BETA_feat-mode_train_split--set")
         signature_part = name.split("_")[-1]
-        assert len(signature_part) == 4
+        assert len(signature_part) == 6
 
     def test_signature_hash_changes_with_payload(self):
         config = self._base_config()

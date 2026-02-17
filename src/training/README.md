@@ -18,6 +18,7 @@ This file houses the `train_model` function, which manages the lifecycle of a tr
 **Key Responsibilities:**
 
   * **Orchestration**: The `train_model` function initializes components, including the model, optimizer, loss function, data loaders, and experiment tracking with Weights & Biases.
+  * **W&B Run Naming**: When not explicitly provided, run names are generated from key config fields (model, workflow/split, major hyperparameters, input shape/classes, optimization flags) plus a short signature hash.
   * **Data Pipeline**: It sets up the data pipeline using MONAI, integrating `PersistentDataset` and `CacheDataset` for multi-stage caching (disk and RAM).
   * **On-the-Fly GPU Augmentation**: Augmentations are defined as a separate MONAI `Compose` pipeline that is passed directly to the `train_epoch` function. They are applied to each batch on the GPU, ensuring high performance and no interference with the caching mechanism.
   * **Model Creation**: Includes a `create_model` factory function to instantiate different 3D architectures (`ResNet3D`, `DenseNet3D`, `ViT3D`) based on the project configuration.
