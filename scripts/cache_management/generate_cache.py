@@ -32,19 +32,44 @@ from src.data.utils import get_dynamic_image_path
 from scripts.data_preparation.verify_and_download import download_worker
 
 # --- Logging Configuration ---
-log_directory = project_root / "logs"
-log_directory.mkdir(exist_ok=True)
-log_file_path = log_directory / "generate_cache.log"
+logger = logging.getLogger("generate_cache")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file_path, mode='a'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
+
+def setup_logging(log_directory: Path):
+    log_directory.mkdir(parents=True, exist_ok=True)
+
+    log_file_path = log_directory / "generate_cache.log"
+    error_log_file_path = log_directory / "generate_cache_errors.log"
+    missing_log_file_path = log_directory / "generate_cache_missing_files.log"
+
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.handlers.clear()
+
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    info_file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
+    info_file_handler.setLevel(logging.INFO)
+    info_file_handler.setFormatter(formatter)
+
+    error_file_handler = logging.FileHandler(error_log_file_path, mode='a', encoding='utf-8')
+    error_file_handler.setLevel(logging.ERROR)
+    error_file_handler.setFormatter(formatter)
+
+    missing_file_handler = logging.FileHandler(missing_log_file_path, mode='a', encoding='utf-8')
+    missing_file_handler.setLevel(logging.WARNING)
+    missing_file_handler.setFormatter(formatter)
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(formatter)
+
+    logger.addHandler(info_file_handler)
+    logger.addHandler(error_file_handler)
+    logger.addHandler(missing_file_handler)
+    logger.addHandler(stream_handler)
+
+    logger.info(f"Logging initialized in directory: {log_directory}")
 
 torch.load = functools.partial(torch.load, weights_only=False)
 
@@ -116,6 +141,7 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
             ]
             
             downloaded_volume_names = set()
+            failed_downloads = []
             if volumes_to_download:
                 logger.info(f"[Batch {batch_num}] Downloading {len(volumes_to_download)} files...")
                 with ThreadPoolExecutor(max_workers=config.downloads.max_workers) as executor:
@@ -124,6 +150,21 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
                 for vol_name, res in zip(volumes_to_download, results):
                     if "OK" in res:
                         downloaded_volume_names.add(vol_name)
+                    else:
+                        failed_downloads.append((vol_name, res))
+                        logger.error(f"[Batch {batch_num}] Download failed for {vol_name}: {res}")
+
+                unresolved_volumes = [
+                    volume_name for volume_name in volumes_to_download
+                    if not get_dynamic_image_path(Path(config.paths.img_dir), volume_name, config.paths.dir_structure).exists()
+                ]
+                if unresolved_volumes:
+                    logger.warning(
+                        f"[Batch {batch_num}] {len(unresolved_volumes)} file(s) still missing after download attempts. "
+                        f"See generate_cache_missing_files.log for details."
+                    )
+                    for volume_name in unresolved_volumes:
+                        logger.warning(f"[Batch {batch_num}] Missing raw file: {volume_name}")
             else:
                 logger.info(f"[Batch {batch_num}] All raw files for this batch are already present locally. No downloads needed.")
 
@@ -147,6 +188,15 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
                 if item and isinstance(item, dict) and 'error' not in item:
                     original_volume_name = base_ds[j]['volume_name']
                     successfully_cached_volumes.add(original_volume_name)
+                elif item and isinstance(item, dict) and 'error' in item:
+                    volume_name = item.get('VolumeName', base_ds[j]['volume_name'])
+                    logger.error(f"[Batch {batch_num}] Cache generation failed for {volume_name}: {item['error']}")
+
+            if failed_downloads:
+                logger.warning(
+                    f"[Batch {batch_num}] {len(failed_downloads)} download(s) failed. "
+                    f"Review generate_cache_errors.log for details."
+                )
 
             files_to_clean = downloaded_volume_names.intersection(successfully_cached_volumes)
             if files_to_clean:
@@ -205,6 +255,7 @@ def cleanup_existing_raw_files(config, full_df: pd.DataFrame, cache_dir: Path):
 
 def main(config_path: str, num_workers: int, batch_size: int, clean_local: bool):
     config = load_config(config_path)
+    setup_logging(Path(config.paths.logs_dir))
 
     train_csv_path = Path(config.paths.data_dir) / config.paths.data_subsets.train
     valid_csv_path = Path(config.paths.data_dir) / config.paths.data_subsets.valid

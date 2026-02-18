@@ -15,6 +15,7 @@ paths:
   base_project_dir: ${BASE_PROJECT_DIR}
   cache_dir: ${CACHE_DIR}
   data_dir: ${DATA_DIR}
+  logs_dir: "logs"
 
   dir_structure: "nested" # Options: "flat", "nested"
 

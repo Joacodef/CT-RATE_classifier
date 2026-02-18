@@ -130,6 +130,14 @@ def load_config(config_path: str | Path) -> SimpleNamespace:
                 if hasattr(cfg.paths.metadata, 'valid'):
                     cfg.paths.metadata.valid = data_dir / cfg.paths.metadata.valid
 
+        if hasattr(cfg.paths, 'logs_dir'):
+            logs_dir = Path(cfg.paths.logs_dir)
+            if not logs_dir.is_absolute() and hasattr(cfg.paths, 'base_project_dir'):
+                logs_dir = cfg.paths.base_project_dir / logs_dir
+            cfg.paths.logs_dir = logs_dir.resolve()
+        elif hasattr(cfg.paths, 'base_project_dir'):
+            cfg.paths.logs_dir = (cfg.paths.base_project_dir / "logs").resolve()
+
     if hasattr(cfg, 'workflow'):
         if not hasattr(cfg.workflow, 'mode') or cfg.workflow.mode is None:
             cfg.workflow.mode = 'end-to-end'
