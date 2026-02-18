@@ -11,6 +11,7 @@ import shutil
 import signal
 import sys
 from concurrent.futures import ThreadPoolExecutor
+import resource
 from pathlib import Path
 from threading import current_thread
 from datetime import datetime, timezone
@@ -57,6 +58,48 @@ def write_runtime_status(log_directory: Path, payload: dict):
     }
     with status_file.open("w", encoding="utf-8") as f:
         json.dump(safe_payload, f, indent=2, ensure_ascii=False)
+
+
+def get_process_rss_mb() -> float | None:
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        rss_kb = float(usage.ru_maxrss)
+        return rss_kb / 1024.0
+    except Exception:
+        return None
+
+
+def get_system_available_mb() -> float | None:
+    try:
+        meminfo_path = Path("/proc/meminfo")
+        if not meminfo_path.exists():
+            return None
+        with meminfo_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1]) / 1024.0
+    except Exception:
+        return None
+    return None
+
+
+def get_memory_snapshot() -> dict:
+    rss_mb = get_process_rss_mb()
+    available_mb = get_system_available_mb()
+    snapshot = {}
+    if rss_mb is not None:
+        snapshot["process_rss_mb"] = round(rss_mb, 2)
+    if available_mb is not None:
+        snapshot["system_available_mb"] = round(available_mb, 2)
+    return snapshot
+
+
+def log_memory_snapshot(context: str):
+    snapshot = get_memory_snapshot()
+    if snapshot:
+        logger.info(f"Memory snapshot [{context}]: {snapshot}")
 
 
 def install_crash_hooks(log_directory: Path):
@@ -166,6 +209,7 @@ def setup_logging(log_directory: Path):
             "status": "started",
             "pid": os.getpid(),
             "script": "generate_cache.py",
+            **get_memory_snapshot(),
         },
     )
 
@@ -223,6 +267,7 @@ def cache_batch_with_retries(caching_ds, base_ds, requested_num_workers: int, ba
             f"[Batch {batch_num}] Cache attempt {attempt_idx}/{len(worker_schedule)} "
             f"with DataLoader num_workers={attempt_workers}."
         )
+        log_memory_snapshot(f"batch_{batch_num}_attempt_{attempt_idx}_start")
 
         data_loader = DataLoader(
             caching_ds,
@@ -255,6 +300,7 @@ def cache_batch_with_retries(caching_ds, base_ds, requested_num_workers: int, ba
                 logger.error(
                     f"[Batch {batch_num}] DataLoader worker failure at num_workers={attempt_workers}: {exc}"
                 )
+                log_memory_snapshot(f"batch_{batch_num}_attempt_{attempt_idx}_worker_failure")
                 if has_next_attempt:
                     next_workers = worker_schedule[attempt_idx]
                     logger.warning(
@@ -302,6 +348,7 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
         for i in range(num_batches):
             batch_num = i + 1
             logger.info(f"\n--- Starting Batch {batch_num}/{num_batches} ---")
+            log_memory_snapshot(f"batch_{batch_num}_start")
             write_runtime_status(
                 logs_dir,
                 {
@@ -310,6 +357,7 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
                     "batch": batch_num,
                     "num_batches": num_batches,
                     "total_files": len(files_df),
+                    **get_memory_snapshot(),
                 },
             )
             
@@ -413,6 +461,7 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
                     "cached_in_batch": len(successfully_cached_volumes),
                     "download_failed_in_batch": len(failed_downloads),
                     "workers_used_for_cache": final_workers_used,
+                    **get_memory_snapshot(),
                 },
             )
             flush_log_handlers()
@@ -499,15 +548,18 @@ def main(config_path: str, num_workers: int, batch_size: int, clean_local: bool)
             {
                 "status": "completed",
                 "thread": current_thread().name,
+                **get_memory_snapshot(),
             },
         )
     except Exception:
         logger.exception("Fatal error while running cache generation.")
+        log_memory_snapshot("fatal_error")
         write_runtime_status(
             Path(config.paths.logs_dir),
             {
                 "status": "failed",
                 "thread": current_thread().name,
+                **get_memory_snapshot(),
             },
         )
         flush_log_handlers()
