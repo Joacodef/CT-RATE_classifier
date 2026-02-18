@@ -40,6 +40,7 @@ from scripts.data_preparation.verify_and_download import download_worker
 
 # --- Logging Configuration ---
 logger = logging.getLogger("generate_cache")
+CACHE_DATALOADER_PREFETCH_FACTOR = 1
 
 
 def flush_log_handlers():
@@ -275,7 +276,13 @@ def cache_batch_with_retries(caching_ds, base_ds, requested_num_workers: int, ba
             num_workers=attempt_workers,
             worker_init_fn=worker_init_fn,
             collate_fn=identity_collate,
+            **({"prefetch_factor": CACHE_DATALOADER_PREFETCH_FACTOR} if attempt_workers > 0 else {}),
         )
+
+        if attempt_workers > 0:
+            logger.info(
+                f"[Batch {batch_num}] DataLoader prefetch_factor set to {CACHE_DATALOADER_PREFETCH_FACTOR}."
+            )
 
         successfully_cached_volumes = set()
         try:
