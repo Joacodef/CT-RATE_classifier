@@ -1,13 +1,19 @@
 # scripts/cache_management/generate_cache.py
 
 import argparse
+import atexit
+import faulthandler
 import functools
+import json
 import logging
 import os
 import shutil
+import signal
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import current_thread
+from datetime import datetime, timezone
 
 import pandas as pd
 import torch
@@ -33,6 +39,89 @@ from scripts.data_preparation.verify_and_download import download_worker
 
 # --- Logging Configuration ---
 logger = logging.getLogger("generate_cache")
+
+
+def flush_log_handlers():
+    for handler in logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+
+def write_runtime_status(log_directory: Path, payload: dict):
+    status_file = log_directory / "generate_cache_status.json"
+    safe_payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        **payload,
+    }
+    with status_file.open("w", encoding="utf-8") as f:
+        json.dump(safe_payload, f, indent=2, ensure_ascii=False)
+
+
+def install_crash_hooks(log_directory: Path):
+    fatal_log_path = log_directory / "generate_cache_fatal.log"
+    fatal_log_handle = fatal_log_path.open("a", encoding="utf-8")
+
+    faulthandler.enable(file=fatal_log_handle, all_threads=True)
+
+    def _handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            logger.info("Interrupted by user (KeyboardInterrupt).")
+        else:
+            logger.critical("Uncaught exception in main thread", exc_info=(exc_type, exc_value, exc_traceback))
+        flush_log_handlers()
+
+    def _thread_exception_handler(args):
+        logger.critical(
+            f"Uncaught exception in thread '{args.thread.name if args.thread else 'unknown'}'",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+        flush_log_handlers()
+
+    sys.excepthook = _handle_exception
+    if hasattr(sys, "unraisablehook"):
+        original_unraisablehook = sys.unraisablehook
+
+        def _unraisable_hook(unraisable):
+            logger.critical(
+                f"Unraisable exception in object {unraisable.object}",
+                exc_info=(unraisable.exc_type, unraisable.exc_value, unraisable.exc_traceback),
+            )
+            flush_log_handlers()
+            original_unraisablehook(unraisable)
+
+        sys.unraisablehook = _unraisable_hook
+
+    try:
+        import threading
+        threading.excepthook = _thread_exception_handler
+    except Exception:
+        logger.warning("Could not install threading.excepthook.")
+
+    def _signal_handler(signum, _frame):
+        signal_name = signal.Signals(signum).name if signum in signal.Signals._value2member_map_ else str(signum)
+        logger.critical(f"Received termination signal: {signal_name} ({signum}).")
+        flush_log_handlers()
+
+    for sig_name in ["SIGTERM", "SIGINT", "SIGABRT", "SIGBREAK"]:
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _signal_handler)
+            except Exception:
+                logger.warning(f"Could not register handler for signal {sig_name}.")
+
+    def _on_exit():
+        logger.info("Process exiting. Flushing logs.")
+        flush_log_handlers()
+        try:
+            fatal_log_handle.flush()
+            fatal_log_handle.close()
+        except Exception:
+            pass
+
+    atexit.register(_on_exit)
 
 
 def setup_logging(log_directory: Path):
@@ -70,6 +159,15 @@ def setup_logging(log_directory: Path):
     logger.addHandler(stream_handler)
 
     logger.info(f"Logging initialized in directory: {log_directory}")
+    install_crash_hooks(log_directory)
+    write_runtime_status(
+        log_directory,
+        {
+            "status": "started",
+            "pid": os.getpid(),
+            "script": "generate_cache.py",
+        },
+    )
 
 torch.load = functools.partial(torch.load, weights_only=False)
 
@@ -117,6 +215,7 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
     cache_dir = get_or_create_cache_subdirectory(
         Path(config.paths.cache_dir), preprocess_transforms, split="unified"
     )
+    logs_dir = Path(config.paths.logs_dir)
     
     # Create a single parent directory for all temporary batch caches
     main_temp_hf_dir = Path(config.paths.data_dir) / "temp_hf_batch_cache"
@@ -126,6 +225,16 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
         for i in range(num_batches):
             batch_num = i + 1
             logger.info(f"\n--- Starting Batch {batch_num}/{num_batches} ---")
+            write_runtime_status(
+                logs_dir,
+                {
+                    "status": "running",
+                    "stage": "batch_start",
+                    "batch": batch_num,
+                    "num_batches": num_batches,
+                    "total_files": len(files_df),
+                },
+            )
             
             start_idx = i * batch_size
             end_idx = start_idx + batch_size
@@ -216,13 +325,33 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
             
             # Clean up the temporary Hugging Face cache for the current batch
             logger.info(f"[Batch {batch_num}] Cleaning up temporary Hugging Face cache: {batch_hf_cache_dir}")
-            shutil.rmtree(batch_hf_cache_dir)
+            try:
+                shutil.rmtree(batch_hf_cache_dir)
+            except Exception as e:
+                logger.error(f"[Batch {batch_num}] Failed to clean temporary Hugging Face cache {batch_hf_cache_dir}: {e}")
+
+            write_runtime_status(
+                logs_dir,
+                {
+                    "status": "running",
+                    "stage": "batch_completed",
+                    "batch": batch_num,
+                    "num_batches": num_batches,
+                    "cached_in_batch": len(successfully_cached_volumes),
+                    "download_failed_in_batch": len(failed_downloads),
+                },
+            )
+            flush_log_handlers()
     
     finally:
         # Final cleanup of the parent temporary directory
         if main_temp_hf_dir.exists():
             logger.info(f"Cleaning up main temporary cache directory: {main_temp_hf_dir}")
-            shutil.rmtree(main_temp_hf_dir)
+            try:
+                shutil.rmtree(main_temp_hf_dir)
+            except Exception as e:
+                logger.error(f"Failed to clean main temporary cache directory {main_temp_hf_dir}: {e}")
+        flush_log_handlers()
 
 
 def cleanup_existing_raw_files(config, full_df: pd.DataFrame, cache_dir: Path):
@@ -257,38 +386,58 @@ def main(config_path: str, num_workers: int, batch_size: int, clean_local: bool)
     config = load_config(config_path)
     setup_logging(Path(config.paths.logs_dir))
 
-    train_csv_path = Path(config.paths.data_dir) / config.paths.data_subsets.train
-    valid_csv_path = Path(config.paths.data_dir) / config.paths.data_subsets.valid
-    df_train = pd.read_csv(train_csv_path)
-    df_valid = pd.read_csv(valid_csv_path)
-    full_df = pd.concat([df_train, df_valid], ignore_index=True).drop_duplicates(subset=['VolumeName']).reset_index(drop=True)
-    logger.info(f"Loaded a total of {len(full_df)} unique volumes for cache analysis.")
+    try:
+        train_csv_path = Path(config.paths.data_dir) / config.paths.data_subsets.train
+        valid_csv_path = Path(config.paths.data_dir) / config.paths.data_subsets.valid
+        df_train = pd.read_csv(train_csv_path)
+        df_valid = pd.read_csv(valid_csv_path)
+        full_df = pd.concat([df_train, df_valid], ignore_index=True).drop_duplicates(subset=['VolumeName']).reset_index(drop=True)
+        logger.info(f"Loaded a total of {len(full_df)} unique volumes for cache analysis.")
 
-    preprocess_transforms = get_preprocessing_transforms(config)
-    cache_dir = get_or_create_cache_subdirectory(Path(config.paths.cache_dir), preprocess_transforms, split="unified")
-    missing_files_df = analyze_cache_state(full_df, cache_dir)
-    
-    num_missing = len(missing_files_df)
-    logger.info("\n--- Cache Analysis Complete ---")
-    logger.info(f"Total volumes required: {len(full_df)}")
-    logger.info(f"Existing cached files:  {len(full_df) - num_missing}")
-    logger.info(f"Missing cache files:    {num_missing}")
-    
-    if num_missing > 0:
-        try:
-            if input("\nProceed with processing missing files in batches? (Y/N): ").strip().lower() != 'y':
-                logger.info("Process declined by user.")
-            else:
-                process_in_batches(config, missing_files_df, batch_size, num_workers)
-        except (EOFError, KeyboardInterrupt):
-            logger.info("\nProcess cancelled by user.")
-    else:
-        logger.info("Cache is already complete. Nothing to do for missing files.")
+        preprocess_transforms = get_preprocessing_transforms(config)
+        cache_dir = get_or_create_cache_subdirectory(Path(config.paths.cache_dir), preprocess_transforms, split="unified")
+        missing_files_df = analyze_cache_state(full_df, cache_dir)
+        
+        num_missing = len(missing_files_df)
+        logger.info("\n--- Cache Analysis Complete ---")
+        logger.info(f"Total volumes required: {len(full_df)}")
+        logger.info(f"Existing cached files:  {len(full_df) - num_missing}")
+        logger.info(f"Missing cache files:    {num_missing}")
+        
+        if num_missing > 0:
+            try:
+                if input("\nProceed with processing missing files in batches? (Y/N): ").strip().lower() != 'y':
+                    logger.info("Process declined by user.")
+                else:
+                    process_in_batches(config, missing_files_df, batch_size, num_workers)
+            except (EOFError, KeyboardInterrupt):
+                logger.info("\nProcess cancelled by user.")
+        else:
+            logger.info("Cache is already complete. Nothing to do for missing files.")
 
-    if clean_local:
-        cleanup_existing_raw_files(config, full_df, cache_dir)
-    else:
-        logger.info("Skipping final cleanup of existing raw files. Use --clean-local-raw-files to enable.")
+        if clean_local:
+            cleanup_existing_raw_files(config, full_df, cache_dir)
+        else:
+            logger.info("Skipping final cleanup of existing raw files. Use --clean-local-raw-files to enable.")
+
+        write_runtime_status(
+            Path(config.paths.logs_dir),
+            {
+                "status": "completed",
+                "thread": current_thread().name,
+            },
+        )
+    except Exception:
+        logger.exception("Fatal error while running cache generation.")
+        write_runtime_status(
+            Path(config.paths.logs_dir),
+            {
+                "status": "failed",
+                "thread": current_thread().name,
+            },
+        )
+        flush_log_handlers()
+        raise
 
 if __name__ == '__main__':
     if sys.platform == "win32":
