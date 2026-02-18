@@ -192,6 +192,83 @@ class CachingDataset(torch.utils.data.Dataset):
 def identity_collate(batch):
     return batch
 
+
+def is_worker_termination_error(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    return (
+        "dataloader worker" in error_text
+        and ("exited unexpectedly" in error_text or "killed by signal" in error_text)
+    )
+
+
+def build_worker_retry_schedule(initial_num_workers: int) -> list[int]:
+    workers = max(0, int(initial_num_workers))
+    schedule = []
+    while workers > 0:
+        schedule.append(workers)
+        if workers == 1:
+            break
+        workers = max(1, workers // 2)
+    if 0 not in schedule:
+        schedule.append(0)
+    return schedule
+
+
+def cache_batch_with_retries(caching_ds, base_ds, requested_num_workers: int, batch_num: int):
+    worker_schedule = build_worker_retry_schedule(requested_num_workers)
+    last_exception = None
+
+    for attempt_idx, attempt_workers in enumerate(worker_schedule, start=1):
+        logger.info(
+            f"[Batch {batch_num}] Cache attempt {attempt_idx}/{len(worker_schedule)} "
+            f"with DataLoader num_workers={attempt_workers}."
+        )
+
+        data_loader = DataLoader(
+            caching_ds,
+            batch_size=None,
+            num_workers=attempt_workers,
+            worker_init_fn=worker_init_fn,
+            collate_fn=identity_collate,
+        )
+
+        successfully_cached_volumes = set()
+        try:
+            progress_bar = tqdm(
+                enumerate(data_loader),
+                desc=f"Caching Batch {batch_num} (workers={attempt_workers})",
+                total=len(caching_ds),
+            )
+            for j, item in progress_bar:
+                if item and isinstance(item, dict) and 'error' not in item:
+                    original_volume_name = base_ds[j]['volume_name']
+                    successfully_cached_volumes.add(original_volume_name)
+                elif item and isinstance(item, dict) and 'error' in item:
+                    volume_name = item.get('VolumeName', base_ds[j]['volume_name'])
+                    logger.error(f"[Batch {batch_num}] Cache generation failed for {volume_name}: {item['error']}")
+
+            return successfully_cached_volumes, attempt_workers
+        except RuntimeError as exc:
+            last_exception = exc
+            if is_worker_termination_error(exc):
+                has_next_attempt = attempt_idx < len(worker_schedule)
+                logger.error(
+                    f"[Batch {batch_num}] DataLoader worker failure at num_workers={attempt_workers}: {exc}"
+                )
+                if has_next_attempt:
+                    next_workers = worker_schedule[attempt_idx]
+                    logger.warning(
+                        f"[Batch {batch_num}] Retrying cache with reduced num_workers={next_workers}."
+                    )
+                    flush_log_handlers()
+                    continue
+
+            raise
+
+    if last_exception is not None:
+        raise last_exception
+    return set(), requested_num_workers
+
 def analyze_cache_state(volumes_df: pd.DataFrame, cache_dir: Path) -> pd.DataFrame:
     if not cache_dir.exists():
         logger.info("Cache directory does not exist. All volumes are missing.")
@@ -286,20 +363,16 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
                 base_dataset=base_ds, transform=preprocess_transforms,
                 cache_dir=cache_dir
             )
-            data_loader = DataLoader(
-                caching_ds, batch_size=None, num_workers=num_workers,
-                worker_init_fn=worker_init_fn, collate_fn=identity_collate
+            successfully_cached_volumes, final_workers_used = cache_batch_with_retries(
+                caching_ds=caching_ds,
+                base_ds=base_ds,
+                requested_num_workers=num_workers,
+                batch_num=batch_num,
             )
-
-            successfully_cached_volumes = set()
-            progress_bar = tqdm(enumerate(data_loader), desc=f"Caching Batch {batch_num}", total=len(caching_ds))
-            for j, item in progress_bar:
-                if item and isinstance(item, dict) and 'error' not in item:
-                    original_volume_name = base_ds[j]['volume_name']
-                    successfully_cached_volumes.add(original_volume_name)
-                elif item and isinstance(item, dict) and 'error' in item:
-                    volume_name = item.get('VolumeName', base_ds[j]['volume_name'])
-                    logger.error(f"[Batch {batch_num}] Cache generation failed for {volume_name}: {item['error']}")
+            logger.info(
+                f"[Batch {batch_num}] Cache completed with num_workers={final_workers_used}. "
+                f"Successfully cached {len(successfully_cached_volumes)} volume(s)."
+            )
 
             if failed_downloads:
                 logger.warning(
@@ -339,6 +412,7 @@ def process_in_batches(config, files_df: pd.DataFrame, batch_size: int, num_work
                     "num_batches": num_batches,
                     "cached_in_batch": len(successfully_cached_volumes),
                     "download_failed_in_batch": len(failed_downloads),
+                    "workers_used_for_cache": final_workers_used,
                 },
             )
             flush_log_handlers()
