@@ -1,12 +1,13 @@
 # scripts/verify_cache_integrity.py
 import argparse
+import json
 import logging
 import os
+import pickle
 import sys
 import zipfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from types import SimpleNamespace
 from typing import List, Tuple
 
 import torch
@@ -17,59 +18,33 @@ project_root = Path(__file__).resolve().parents[2]
 sys.path.append(str(project_root))
 
 from src.config import load_config
-from src.data.cache_utils import get_or_create_cache_subdirectory
-from src.utils.logging_config import setup_logging
-
-# --- MONAI Imports ---
-from monai.transforms import (
-    Compose,
-    LoadImaged,
-    Orientationd,
-    Spacingd,
-    ScaleIntensityRanged,
-    Resized,
-    EnsureTyped,
+from src.data.cache_utils import (
+    deterministic_hash,
+    get_transform_params,
+    json_serial_converter,
 )
+from src.data.transforms import get_preprocessing_transforms
+from src.utils.logging_config import setup_logging
 
 # --- Logging Configuration ---
 setup_logging(log_file=project_root / "logs" / "cache_verification.log")
 logger = logging.getLogger(__name__)
 
 
-def get_cache_defining_transform(config: SimpleNamespace) -> Compose:
+def get_cache_subdirectory_for_config(config) -> Path:
     """
-    Recreates the exact transform pipeline used for caching in verify_dataset.py.
+    Recreates the exact transform pipeline used during cache generation and
+    resolves the deterministic cache subdirectory without creating it.
     """
-    return Compose(
-        [
-            LoadImaged(
-                keys="image",
-                image_only=True,
-                ensure_channel_first=True,
-                reader="NibabelReader",
-            ),
-            Orientationd(keys="image", axcodes=config.image_processing.orientation_axcodes),
-            Spacingd(
-                keys="image",
-                pixdim=config.image_processing.target_spacing,
-                mode="bilinear",
-            ),
-            ScaleIntensityRanged(
-                keys="image",
-                a_min=config.image_processing.clip_hu_min,
-                a_max=config.image_processing.clip_hu_max,
-                b_min=0.0,
-                b_max=1.0,
-                clip=True,
-            ),
-            Resized(
-                keys="image",
-                spatial_size=config.image_processing.target_shape_dhw,
-                mode="area",
-            ),
-            EnsureTyped(keys=["image", "label"], dtype=torch.float32),
-        ]
+    preprocess_transforms = get_preprocessing_transforms(config)
+    transform_params = get_transform_params(preprocess_transforms)
+    transform_params_str = json.dumps(
+        transform_params,
+        sort_keys=True,
+        default=json_serial_converter,
     )
+    config_hash = deterministic_hash(transform_params_str).decode("utf-8")
+    return Path(config.paths.cache_dir) / config_hash
 
 
 def verify_file_integrity(file_path: Path) -> Tuple[Path, bool]:
@@ -94,7 +69,7 @@ def verify_cache_integrity(config_path: str, fix: bool, workers: int):
     try:
         logger.info(f"Loading configuration from: {config_path}")
         config = load_config(config_path)
-        base_cache_dir = config.paths.cache_dir
+        base_cache_dir = Path(config.paths.cache_dir)
 
         if not base_cache_dir.is_dir():
             logger.info(
@@ -102,14 +77,14 @@ def verify_cache_integrity(config_path: str, fix: bool, workers: int):
             )
             return
 
-        path_defining_transform = get_cache_defining_transform(config)
-        unified_cache_dir = get_or_create_cache_subdirectory(
-            base_cache_dir, path_defining_transform, split="unified"
-        )
+        unified_cache_dir = get_cache_subdirectory_for_config(config)
         logger.info(f"Target cache directory identified: {unified_cache_dir}")
 
         if not unified_cache_dir.is_dir():
-            logger.info("Cache directory does not exist. No files to verify.")
+            logger.info(
+                "Expected cache directory does not exist for this config. "
+                "Verification skipped without creating new cache folders."
+            )
             return
 
         files_to_check = list(unified_cache_dir.glob("*.pt"))
@@ -211,6 +186,4 @@ def main():
 if __name__ == "__main__":
     if sys.platform == "win32":
         torch.multiprocessing.freeze_support()
-    # Import pickle here for the except block
-    import pickle
     main()
